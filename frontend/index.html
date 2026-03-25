@@ -1,0 +1,622 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>ProctorAI — Smart Exam Integrity System</title>
+
+<!-- External CDN libraries -->
+<script src="https://cdn.jsdelivr.net/npm/face-api.js@0.22.2/dist/face-api.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
+<script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;500;600;700;800;900&family=Exo+2:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&family=JetBrains+Mono:wght@300;400;500;600&display=swap" rel="stylesheet"/>
+
+<!-- App stylesheet -->
+<link rel="stylesheet" href="style.css"/>
+</head>
+<body>
+<div id="scanOverlay"></div>
+<div id="app">
+
+<!-- ═══════ AUTH ═══════ -->
+<div id="vAuth" class="view">
+  <div class="auth-grid-bg"></div>
+  <div class="auth-particles" id="particles"></div>
+  <div class="auth-corner tl"></div><div class="auth-corner tr"></div>
+  <div class="auth-corner bl"></div><div class="auth-corner br"></div>
+
+  <div class="auth-center">
+    <div class="auth-logo-wrap">
+      <div class="auth-logo">PROCTOR<span style="color:var(--violet)">AI</span></div>
+      <div class="auth-tagline">SMART ONLINE EXAM INTEGRITY SYSTEM · v4.0</div>
+      <div class="auth-status-bar">
+        <div class="auth-status-item"><span class="sdot sd-g"></span><span>SYSTEM ONLINE</span></div>
+        <div class="auth-status-item"><span class="sdot sd-c"></span><span id="ai-load-lbl">LOADING AI MODELS</span></div>
+        <div class="auth-status-item"><span class="sdot sd-g"></span><span>AES-256 ENCRYPTED</span></div>
+      </div>
+    </div>
+
+    <div class="role-selector">
+      <button class="role-btn stu active" onclick="switchRole('student')">
+        <span class="role-icon">🎓</span>
+        <span style="font-size:11px">STUDENT</span>
+      </button>
+      <button class="role-btn adm" onclick="switchRole('admin')">
+        <span class="role-icon">🛡️</span>
+        <span style="font-size:11px">ADMIN</span>
+      </button>
+    </div>
+
+    <div class="form-tabs">
+      <button class="form-tab-btn active" id="ftab-login" onclick="switchForm('login')">LOGIN</button>
+      <button class="form-tab-btn" id="ftab-reg" onclick="switchForm('register')">REGISTER</button>
+    </div>
+
+    <!-- LOGIN -->
+    <div id="form-login" class="auth-card">
+      <div class="auth-card-title" id="lt">STUDENT LOGIN</div>
+      <div class="auth-card-sub" id="ls">Enter your credentials to access the exam portal</div>
+      <div class="msg-err" id="lerr"></div>
+      <div class="fg"><div class="fl">EMAIL ADDRESS</div><input class="fi" id="li-email" type="email" placeholder="you@student.edu" autocomplete="email"/></div>
+      <div class="fg"><div class="fl">PASSWORD</div><input class="fi" id="li-pwd" type="password" placeholder="••••••••"/></div>
+      <button class="auth-submit-btn stu" id="li-btn" onclick="doLogin()">LOGIN →</button>
+      <div class="auth-switch">No account? <a id="li-sw" onclick="switchForm('register')">Register here</a></div>
+      <div class="demo-hint">
+        STUDENT: <span><a href="/cdn-cgi/l/email-protection" class="__cf_email__" data-cfemail="b7c7c5deced6f7c4c3c2d3d2d9c399d2d3c2">[email&#160;protected]</a></span> / <span>Student@123</span><br>
+        ADMIN: <span><a href="/cdn-cgi/l/email-protection" class="__cf_email__" data-cfemail="741510191d1a3404061b17001b06151d5a111001">[email&#160;protected]</a></span> / <span>Admin@123</span>
+      </div>
+    </div>
+
+    <!-- REGISTER -->
+    <div id="form-reg" class="auth-card hidden">
+      <div class="auth-card-title" id="rt">STUDENT REGISTRATION</div>
+      <div class="auth-card-sub" id="rs">Create your account to access exam portal</div>
+      <div class="msg-err" id="rerr"></div>
+      <div class="msg-ok" id="rok"></div>
+      <div class="form-2col">
+        <div class="fg"><div class="fl">FIRST NAME</div><input class="fi" id="r-fn" placeholder="First name"/></div>
+        <div class="fg"><div class="fl">LAST NAME</div><input class="fi" id="r-ln" placeholder="Last name"/></div>
+      </div>
+      <div class="fg"><div class="fl">EMAIL ADDRESS</div><input class="fi" id="r-em" type="email" placeholder="you@student.edu"/></div>
+      <div class="form-2col">
+        <div class="fg"><div class="fl">STUDENT ID</div><input class="fi" id="r-sid" placeholder="STU2025001"/></div>
+        <div class="fg"><div class="fl">DEPARTMENT</div>
+          <select class="fi" id="r-dept">
+            <option>Computer Science</option><option>Information Technology</option>
+            <option>Electronics</option><option>Mechanical</option><option>Civil Engineering</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-2col">
+        <div class="fg"><div class="fl">PASSWORD</div><input class="fi" id="r-pw" type="password" placeholder="Min 6 chars"/></div>
+        <div class="fg"><div class="fl">CONFIRM PASSWORD</div><input class="fi" id="r-cpw" type="password" placeholder="Repeat"/></div>
+      </div>
+      <div id="adm-code-row" class="fg hidden"><div class="fl">ADMIN ACCESS CODE</div><input class="fi fi-admin" id="r-acode" placeholder="Enter admin registration key"/></div>
+      <button class="auth-submit-btn stu" id="r-btn" onclick="doRegister()">CREATE ACCOUNT →</button>
+      <div class="auth-switch">Have account? <a id="r-sw" onclick="switchForm('login')">Login here</a></div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════ STUDENT SETUP ═══════ -->
+<div id="vSetup" class="view hidden">
+  <div class="setup-wrap">
+    <div class="setup-title">PRE-EXAM VERIFICATION</div>
+    <div class="setup-sub">SYSTEM CHECK · IDENTITY VERIFICATION · ENVIRONMENT SCAN</div>
+    <div class="setup-grid">
+      <div>
+        <div class="cam-wrap" id="setup-cam-wrap">
+          <video id="sv" autoplay muted playsinline></video>
+          <canvas id="sc"></canvas>
+          <div class="cam-badge"><span class="badge b-c"><span class="sdot sd-c" style="width:5px;height:5px"></span>CAMERA LIVE</span></div>
+          <div class="cam-bottom">
+            <div class="cam-chip">FACE: <span id="sf-conf" class="safe" style="margin-left:4px">Scanning…</span></div>
+            <div class="cam-chip">LIGHT: <span id="sl-val" class="warn" style="margin-left:4px">Checking…</span></div>
+          </div>
+        </div>
+        <div class="chk-box">
+          <div class="chk-head">SYSTEM VERIFICATION CHECKS</div>
+          <div class="chk-row" id="chk-cam"><span class="chk-icon">⏳</span>Camera Access</div>
+          <div class="chk-row" id="chk-mic"><span class="chk-icon">⏳</span>Microphone Access</div>
+          <div class="chk-row" id="chk-face"><span class="chk-icon">⏳</span>Face Detected in Frame</div>
+          <div class="chk-row" id="chk-light"><span class="chk-icon">⏳</span>Adequate Lighting</div>
+          <div class="chk-row" id="chk-ai"><span class="chk-icon">⏳</span>AI Models Ready</div>
+        </div>
+      </div>
+      <div class="setup-form">
+        <div class="fg"><div class="fl">FULL NAME</div><input class="fi" id="inp-name" placeholder="Your full name"/></div>
+        <div class="fg"><div class="fl">STUDENT ID</div><input class="fi" id="inp-id" placeholder="e.g. STU2025001"/></div>
+        <div class="fg"><div class="fl">EXAM CODE</div><input class="fi" id="inp-code" placeholder="e.g. CS401-FINAL-2025"/></div>
+        <div class="fg"><div class="fl">SUBJECT</div>
+          <select class="fi" id="inp-sub">
+            <option>Computer Science — Data Structures</option>
+            <option>Software Engineering</option>
+            <option>Database Management Systems</option>
+            <option>Computer Networks</option>
+            <option>Aptitude Test</option>
+            <option>Logical Reasoning</option>
+            <option>Web Technology</option>
+            <option>Python Programming</option>
+            <option>SQL & Database</option>
+            <option>Data Science</option>
+            <option>Machine Learning</option>
+          </select>
+        </div>
+        <div class="rules-box">
+          <div class="rules-title">EXAM RULES — READ CAREFULLY</div>
+          • Camera must remain active throughout the exam<br>
+          • Switching tabs triggers immediate alert to admin<br>
+          • Copy, paste and right-click are fully disabled<br>
+          • AI monitors face, gaze, audio and objects live<br>
+          • Each violation deducts from your Integrity Score
+        </div>
+        <button class="start-btn" id="start-btn" onclick="startExam()" disabled>BEGIN EXAM SESSION →</button>
+        <button style="background:none;border:none;color:var(--t3);font-size:11px;cursor:pointer;margin-top:4px;font-family:'JetBrains Mono',monospace" onclick="showV('vAuth')">← Back to login</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════ EXAM VIEW ═══════ -->
+<div id="vExam" class="view hidden">
+  <div class="ex-topbar">
+    <div class="ex-logo-text">PROCTOR<span style="background:linear-gradient(90deg,var(--violet),var(--cyan));-webkit-background-clip:text;background-clip:text;color:transparent">AI</span></div>
+    <div class="ex-info"><span style="color:var(--t2)">Student:</span> <b id="ex-name">—</b> &nbsp;|&nbsp; <span style="color:var(--t2)">Exam:</span> <b id="ex-code" class="cyan">—</b></div>
+    <div style="display:flex;align-items:center;gap:10px">
+      <span class="badge b-g"><span class="sdot sd-g" style="width:5px;height:5px"></span>AI ACTIVE</span>
+      <div class="timer-wrap"><span style="font-size:9px;color:var(--t2)">⏱</span><span class="timer-digits" id="ex-timer">60:00</span></div>
+      <div class="int-wrap">
+        <div>
+          <div class="int-lbl">INTEGRITY</div>
+          <div class="int-num safe" id="ex-int">100</div>
+        </div>
+      </div>
+      <!-- FIX 2: Live risk score widget -->
+      <div class="int-wrap" style="border:1px solid rgba(255,36,68,.3);background:rgba(255,36,68,.06);border-radius:8px;padding:6px 14px">
+        <div>
+          <div class="int-lbl" style="color:var(--red)">RISK</div>
+          <div class="int-num" id="ex-risk" style="color:var(--grn);font-size:20px;font-weight:900">0</div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="exam-body">
+    <div class="q-panel" id="q-panel">
+      <div class="qprog-bar">
+        <span style="font-size:9px;color:var(--t2);font-family:'JetBrains Mono',monospace;white-space:nowrap">Q<span id="qcn">1</span>/10</span>
+        <div class="qprog-track"><div class="qprog-fill" id="qfill" style="width:0%"></div></div>
+        <span style="font-size:9px;color:var(--cyan);font-family:'JetBrains Mono',monospace;white-space:nowrap"><span id="qans">0</span>/10 DONE</span>
+      </div>
+      <div class="q-nav-dots" id="qnav"></div>
+      <div id="qcard"></div>
+      <div class="q-actions">
+        <button class="qa-btn qa-ghost" id="qbprev" onclick="prevQ()">← PREV</button>
+        <button class="qa-btn qa-submit" id="qbsub" onclick="confirmSub()" style="display:none">SUBMIT EXAM ✓</button>
+        <button class="qa-btn qa-next" id="qbnext" onclick="nextQ()">NEXT →</button>
+      </div>
+    </div>
+
+    <!-- AI PANEL -->
+    <div class="ai-panel">
+      <div class="aip-header">
+        <span class="aip-title">⬡ AI PROCTOR ENGINE</span>
+        <span class="badge b-v">face-api.js</span>
+      </div>
+      <div class="cam-feed-wrap">
+        <video id="ev" autoplay muted playsinline></video>
+        <canvas id="ec"></canvas>
+        <div class="cam-hud">
+          <div class="cam-hud-br">
+            <div class="hud-chip"><span class="hud-rec"></span>REC</div>
+            <div class="hud-chip">FACE: <span id="fv" class="safe" style="margin-left:3px">–</span></div>
+            <div class="hud-chip">GAZE: <span id="gv" class="safe" style="margin-left:3px">–</span></div>
+          </div>
+        </div>
+      </div>
+      <div class="ai-mods-list" id="aimods">
+        <div class="amod" id="m-face"><div class="amod-ico">👤</div><div class="amod-body"><div class="amod-lbl">FACE DETECTION</div><div class="amod-val safe" id="mv-face">Initializing…</div><div class="amod-prog"><div class="amod-prog-fill" id="mf-face" style="width:0%;background:var(--grn)"></div></div></div><span class="badge b-g" id="mb-face">–</span></div>
+        <div class="amod" id="m-gaze"><div class="amod-ico">👁️</div><div class="amod-body"><div class="amod-lbl">EYE &amp; GAZE TRACK</div><div class="amod-val safe" id="mv-gaze">Initializing…</div><div class="amod-prog"><div class="amod-prog-fill" id="mf-gaze" style="width:0%;background:var(--grn)"></div></div></div><span class="badge b-g" id="mb-gaze">–</span></div>
+        <div class="amod" id="m-multi"><div class="amod-ico">👥</div><div class="amod-body"><div class="amod-lbl">MULTI-PERSON DETECT</div><div class="amod-val safe" id="mv-multi">Scanning frame…</div><div class="amod-prog"><div class="amod-prog-fill" id="mf-multi" style="width:1%;background:var(--grn)"></div></div></div><span class="badge b-g" id="mb-multi">CLEAR</span></div>
+        <div class="amod" id="m-audio"><div class="amod-ico">🎙️</div><div class="amod-body"><div class="amod-lbl">AUDIO MONITORING</div><div class="audio-wave" id="audiowave"></div></div><span class="badge b-g" id="mb-audio">LOW</span></div>
+        <div class="amod" id="m-tab"><div class="amod-ico">🖥️</div><div class="amod-body"><div class="amod-lbl">TAB SWITCH DETECT</div><div class="amod-val safe" id="mv-tab">No switches</div></div><span class="badge b-g" id="mb-tab">0</span></div>
+        <div class="amod" id="m-paste"><div class="amod-ico">📋</div><div class="amod-body"><div class="amod-lbl">COPY-PASTE BLOCK</div><div class="amod-val safe" id="mv-paste">Active &amp; Monitoring</div></div><span class="badge b-g" id="mb-paste">0</span></div>
+        <div class="amod" id="m-obj"><div class="amod-ico">📱</div><div class="amod-body"><div class="amod-lbl">OBJECT DETECTION</div><div class="amod-val safe" id="mv-obj">Environment clear</div><div class="amod-prog"><div class="amod-prog-fill" id="mf-obj" style="width:2%;background:var(--grn)"></div></div></div><span class="badge b-g" id="mb-obj">CLEAR</span></div>
+        <div class="amod" id="m-screen"><div class="amod-ico">🔍</div><div class="amod-body"><div class="amod-lbl">SCREEN ACTIVITY</div><div class="amod-val safe" id="mv-screen">Normal interaction</div></div><span class="badge b-g" id="mb-screen">OK</span></div>
+        <div class="amod" id="m-expr"><div class="amod-ico">😐</div><div class="amod-body"><div class="amod-lbl">EMOTION ANALYSIS</div><div class="amod-val safe" id="mv-expr">Neutral / Focused</div><div class="amod-prog"><div class="amod-prog-fill" id="mf-expr" style="width:85%;background:var(--grn)"></div></div></div><span class="badge b-g" id="mb-expr">CALM</span></div>
+      </div>
+      <div class="vlog-wrap">
+        <div class="vlog-head"><span>⚡ VIOLATION LOG</span><span id="vcnt" class="safe">0 events</span></div>
+        <div class="vlog-list" id="vitems"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════ RESULTS VIEW ═══════ -->
+<div id="vResults" class="view hidden">
+  <div style="height:100%;overflow-y:auto;background:radial-gradient(ellipse 80% 60% at 50% -10%,rgba(0,245,255,.06),transparent 60%),var(--bg0);display:flex;align-items:center;justify-content:center;padding:20px">
+    <div style="max-width:680px;width:100%;animation:fadeUp .5s ease">
+      <!-- Header -->
+      <div style="text-align:center;margin-bottom:28px">
+        <div style="font-family:'Orbitron',monospace;font-size:36px;font-weight:900;letter-spacing:6px;
+          color:transparent;background:linear-gradient(135deg,var(--cyan),var(--grn));
+          -webkit-background-clip:text;background-clip:text;filter:drop-shadow(0 0 20px rgba(0,245,255,.3))">
+          EXAM COMPLETE
+        </div>
+        <div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--t2);letter-spacing:3px;margin-top:6px">
+          RESULTS SUMMARY · REPORT SENT TO ADMIN
+        </div>
+      </div>
+
+      <!-- Score Cards Row -->
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:20px">
+        <div style="background:linear-gradient(135deg,rgba(0,245,255,.08),rgba(0,255,157,.05));border:1px solid rgba(0,245,255,.3);border-radius:12px;padding:18px;text-align:center;box-shadow:0 0 20px rgba(0,245,255,.1)">
+          <div style="font-family:'JetBrains Mono',monospace;font-size:9px;color:var(--t2);letter-spacing:1.5px;margin-bottom:6px">SCORE</div>
+          <div class="orb" style="font-size:32px;font-weight:900;color:var(--cyan)" id="res-score">—</div>
+          <div style="font-size:10px;color:var(--t2);margin-top:4px" id="res-pct">—%</div>
+        </div>
+        <div style="background:linear-gradient(135deg,rgba(176,96,255,.08),rgba(0,245,255,.05));border:1px solid rgba(176,96,255,.3);border-radius:12px;padding:18px;text-align:center">
+          <div style="font-family:'JetBrains Mono',monospace;font-size:9px;color:var(--t2);letter-spacing:1.5px;margin-bottom:6px">INTEGRITY</div>
+          <div class="orb" style="font-size:32px;font-weight:900" id="res-int">—</div>
+          <div style="font-size:10px;color:var(--t2);margin-top:4px">/ 100</div>
+        </div>
+        <div id="res-verdict-card" style="background:linear-gradient(135deg,rgba(0,255,157,.08),rgba(0,245,255,.05));border:1px solid rgba(0,255,157,.3);border-radius:12px;padding:18px;text-align:center">
+          <div style="font-family:'JetBrains Mono',monospace;font-size:9px;color:var(--t2);letter-spacing:1.5px;margin-bottom:6px">VERDICT</div>
+          <div class="orb" style="font-size:22px;font-weight:900" id="res-verdict">—</div>
+          <div style="font-size:10px;color:var(--t2);margin-top:4px" id="res-sub-name">—</div>
+        </div>
+      </div>
+
+      <!-- Violation Summary -->
+      <div style="background:var(--bg2);border:1px solid var(--bdr);border-radius:12px;padding:16px;margin-bottom:16px">
+        <div style="font-family:'Orbitron',monospace;font-size:12px;font-weight:700;letter-spacing:1px;color:var(--t1);margin-bottom:12px;display:flex;align-items:center;gap:8px">
+          ⚡ VIOLATION LOG  <span id="res-vcount" class="badge b-r">0 violations</span>
+        </div>
+        <div id="res-vlist" style="display:flex;flex-direction:column;gap:5px;max-height:160px;overflow-y:auto">
+          <div style="color:var(--t3);font-size:11px;font-family:'JetBrains Mono',monospace">No violations recorded.</div>
+        </div>
+      </div>
+
+      <!-- PDF Sent Notice -->
+      <div id="res-pdf-notice" style="background:rgba(0,255,157,.06);border:1px solid rgba(0,255,157,.25);border-radius:10px;padding:12px 16px;margin-bottom:16px;display:flex;align-items:center;gap:10px">
+        <span style="font-size:20px">📨</span>
+        <div>
+          <div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--grn);letter-spacing:1px;font-weight:700">REPORT SENT TO ADMIN</div>
+          <div style="font-size:11px;color:var(--t1);margin-top:2px">Your exam report with integrity score and violations has been automatically forwarded to the administrator.</div>
+        </div>
+      </div>
+
+      <!-- Navigation Buttons -->
+      <div style="display:flex;gap:12px;justify-content:center">
+        <button onclick="retakeExamFlow()" style="padding:12px 28px;border-radius:8px;background:transparent;border:1px solid var(--bdr2);color:var(--t1);font-family:'Orbitron',monospace;font-size:12px;font-weight:700;letter-spacing:2px;cursor:pointer;transition:.2s" onmouseover="this.style.background='var(--bg3)'" onmouseout="this.style.background='transparent'">↺ NEW EXAM</button>
+        <button onclick="goHomeFromResults()" style="padding:12px 28px;border-radius:8px;background:linear-gradient(135deg,var(--cyan2),var(--grn2));border:none;color:#000;font-family:'Orbitron',monospace;font-size:12px;font-weight:700;letter-spacing:2px;cursor:pointer;transition:.2s" onmouseover="this.style.boxShadow='0 4px 20px rgba(0,245,255,.35)'" onmouseout="this.style.boxShadow='none'">🏠 RETURN HOME</button>
+        <button onclick="downloadMyReport()" style="padding:12px 28px;border-radius:8px;background:linear-gradient(135deg,var(--violet2),var(--cyan3));border:none;color:#fff;font-family:'Orbitron',monospace;font-size:12px;font-weight:700;letter-spacing:2px;cursor:pointer;transition:.2s" onmouseover="this.style.boxShadow='0 4px 20px rgba(176,96,255,.35)'" onmouseout="this.style.boxShadow='none'">📄 DOWNLOAD REPORT</button>
+      </div>
+    </div>
+  </div>
+</div>
+<div id="vAdmin" class="view hidden">
+  <div class="adm-topbar">
+    <div class="adm-logo">PROCTOR<span style="background:linear-gradient(90deg,var(--cyan),var(--grn));-webkit-background-clip:text;background-clip:text">AI</span> <span style="font-size:10px;font-weight:400;color:var(--t2);letter-spacing:1px;font-family:'JetBrains Mono',monospace">ADMIN</span></div>
+    <div class="adm-topbar-right">
+      <span class="badge b-g"><span class="sdot sd-g" style="width:5px;height:5px"></span>LIVE SESSION</span>
+      <div class="adm-qs">
+        <div class="adm-qs-item"><span class="adm-qs-lbl">ACTIVE</span><span class="adm-qs-val cyan" id="aq-act">8</span></div>
+        <div class="adm-qs-item"><span class="adm-qs-lbl">FLAGGED</span><span class="adm-qs-val danger" id="aq-flg">2</span></div>
+        <div class="adm-qs-item"><span class="adm-qs-lbl">ALERTS</span><span class="adm-qs-val warn" id="aq-alr">0</span></div>
+      </div>
+      <span class="adm-user-info" id="adm-uname"><a href="/cdn-cgi/l/email-protection" class="__cf_email__" data-cfemail="0d6c696064634d7d7f626e79627f6c6423686978">[email&#160;protected]</a></span>
+      <button class="logout-btn" onclick="doLogout()">LOGOUT →</button>
+    </div>
+  </div>
+
+  <div class="adm-nav">
+    <button class="nav-btn active" data-tab="dashboard" onclick="gotoTab('dashboard')">📊 Dashboard</button>
+    <button class="nav-btn" data-tab="monitor" onclick="gotoTab('monitor')">📹 Live Monitor <span class="nav-badge" id="nb-live">8</span></button>
+    <button class="nav-btn" data-tab="exams" onclick="gotoTab('exams')">📝 Exams</button>
+    <button class="nav-btn" data-tab="students" onclick="gotoTab('students')">👥 Students</button>
+    <button class="nav-btn" data-tab="reports" onclick="gotoTab('reports')">📨 Reports <span class="nav-badge" id="nb-reports" style="display:none">0</span></button>
+    <button class="nav-btn" data-tab="analytics" onclick="gotoTab('analytics')">📈 Analytics</button>
+    <button class="nav-btn" data-tab="messages" onclick="gotoTab('messages')">💬 Messages <span class="nav-badge" id="nb-msg" style="display:none">3</span></button>
+  </div>
+
+  <div class="adm-body">
+    <div class="adm-main" id="adm-main">
+
+      <!-- DASHBOARD -->
+      <div class="tab-pane active" id="tab-dashboard">
+        <div class="stats-row">
+          <div class="stat-card sc"><div class="sc-lbl">ACTIVE STUDENTS</div><div class="sc-val cyan" id="sc-act">8</div><div class="sc-sub">Currently monitored</div><div class="sc-trend safe">+0 this hour</div></div>
+          <div class="stat-card sg"><div class="sc-lbl">AVG INTEGRITY</div><div class="sc-val safe" id="sc-int">86%</div><div class="sc-sub">All sessions</div></div>
+          <div class="stat-card sa"><div class="sc-lbl">WARNINGS ISSUED</div><div class="sc-val warn" id="sc-wrn">5</div><div class="sc-sub">This session</div></div>
+          <div class="stat-card sr"><div class="sc-lbl">FLAGGED SESSIONS</div><div class="sc-val danger" id="sc-flg">2</div><div class="sc-sub">Require review</div></div>
+          <div class="stat-card" style="border-color:var(--violet2)"><div class="sc-lbl">REGISTERED</div><div class="sc-val violet" id="sc-reg">0</div><div class="sc-sub">Total accounts</div></div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+          <div style="background:linear-gradient(135deg,var(--bg2),var(--bg3));border:1px solid var(--bdr);border-radius:10px;padding:14px">
+            <div style="font-family:'Orbitron',monospace;font-size:12px;font-weight:700;letter-spacing:1px;margin-bottom:10px;color:var(--t1)">RECENT VIOLATIONS</div>
+            <div id="dash-viols"></div>
+          </div>
+          <div style="background:linear-gradient(135deg,var(--bg2),var(--bg3));border:1px solid var(--bdr);border-radius:10px;padding:14px">
+            <div style="font-family:'Orbitron',monospace;font-size:12px;font-weight:700;letter-spacing:1px;margin-bottom:10px;color:var(--t1)">INTEGRITY OVERVIEW</div>
+            <div id="dash-overview"></div>
+          </div>
+        </div>
+        <div style="background:linear-gradient(135deg,var(--bg2),var(--bg3));border:1px solid var(--bdr);border-radius:10px;padding:14px">
+          <div style="font-family:'Orbitron',monospace;font-size:12px;font-weight:700;letter-spacing:1px;margin-bottom:10px;color:var(--t1)">LIVE STUDENT FEEDS — QUICK VIEW</div>
+          <div class="monitor-grid" id="dash-grid" style="grid-template-columns:repeat(4,1fr)"></div>
+        </div>
+      </div>
+
+      <!-- MONITOR -->
+      <div class="tab-pane" id="tab-monitor">
+        <div class="section-hdr">
+          <div>
+            <div class="section-title">Live Student Monitoring</div>
+            <div style="font-size:11px;color:var(--t2);margin-top:2px;font-family:'JetBrains Mono',monospace">Real-time AI face detection on all candidate feeds</div>
+          </div>
+          <div style="display:flex;gap:8px;align-items:center">
+            <span class="badge b-g"><span class="sdot sd-g" style="width:5px;height:5px"></span><span id="live-cnt">8</span> LIVE</span>
+            <select class="fi" style="width:auto;padding:6px 11px;font-size:11px" onchange="filterGrid(this.value)">
+              <option value="all">All Students</option>
+              <option value="active">Active Only</option>
+              <option value="flagged">Flagged Only</option>
+              <option value="suspicious">Suspicious</option>
+            </select>
+          </div>
+        </div>
+        <div class="monitor-grid" id="monitor-grid"></div>
+      </div>
+
+      <!-- EXAMS -->
+      <div class="tab-pane" id="tab-exams">
+        <div class="section-hdr">
+          <div><div class="section-title">Exam Management</div><div style="font-size:11px;color:var(--t2);margin-top:2px;font-family:'JetBrains Mono',monospace">Create, configure and manage all exam sessions</div></div>
+          <button class="create-btn" onclick="openExamModal()">＋ CREATE EXAM</button>
+        </div>
+        <div class="exam-list" id="exam-list"></div>
+      </div>
+
+      <!-- STUDENTS -->
+      <div class="tab-pane" id="tab-students">
+        <div class="section-hdr">
+          <div><div class="section-title">Student Management</div><div style="font-size:11px;color:var(--t2);margin-top:2px;font-family:'JetBrains Mono',monospace">View and manage all registered students</div></div>
+          <button class="create-btn violet" onclick="openAddStudentModal()">＋ ADD STUDENT</button>
+        </div>
+        <div class="search-row">
+          <div class="search-box">
+            <span style="color:var(--t2);font-size:14px">🔍</span>
+            <input class="search-inp" id="stu-srch" placeholder="Search by name, ID or department…" oninput="filterStuTable(this.value)"/>
+            <span style="font-size:9px;color:var(--t2);font-family:'JetBrains Mono',monospace" id="stu-cnt">8 students</span>
+          </div>
+          <select class="fi" style="width:auto;padding:8px 12px;font-size:12px" onchange="filterStuByStatus(this.value)">
+            <option value="all">All Status</option>
+            <option value="active">Active</option>
+            <option value="suspicious">Suspicious</option>
+            <option value="flagged">Flagged</option>
+          </select>
+        </div>
+        <div class="stu-table">
+          <div class="stu-tbl-hdr"><span>STUDENT</span><span>ID</span><span>DEPT</span><span>INTEGRITY</span><span>VIOLATIONS</span><span>ACTIONS</span></div>
+          <div id="stu-tbody"></div>
+        </div>
+      </div>
+
+      <!-- ANALYTICS -->
+      <div class="tab-pane" id="tab-analytics">
+        <div class="stats-row" style="grid-template-columns:repeat(5,1fr)">
+          <div class="stat-card sg"><div class="sc-lbl">TOTAL STUDENTS</div><div class="sc-val safe">8</div></div>
+          <div class="stat-card sc"><div class="sc-lbl">SUBMITTED</div><div class="sc-val cyan">3</div></div>
+          <div class="stat-card sa"><div class="sc-lbl">AVG SCORE</div><div class="sc-val warn">72%</div></div>
+          <div class="stat-card sr"><div class="sc-lbl">TOTAL VIOLATIONS</div><div class="sc-val danger" id="an-tv">25</div></div>
+          <div class="stat-card" style="border-color:var(--bdr)"><div class="sc-lbl">AI DETECTIONS</div><div class="sc-val violet">143</div></div>
+        </div>
+        <div class="analytics-grid">
+          <div class="chart-card"><div class="chart-title-row">Integrity Distribution <span class="badge b-c" style="font-size:8px">LIVE</span></div><div class="chart-wrap"><canvas id="ch-int"></canvas></div></div>
+          <div class="chart-card"><div class="chart-title-row">Violation Types</div><div class="chart-wrap"><canvas id="ch-vtype"></canvas></div></div>
+        </div>
+        <div class="analytics-grid">
+          <div class="chart-card"><div class="chart-title-row">Score vs Integrity <span class="badge b-g" style="font-size:8px">SCATTER</span></div><div class="chart-wrap"><canvas id="ch-scatter"></canvas></div></div>
+          <div class="chart-card"><div class="chart-title-row">Violations Over Time</div><div class="chart-wrap"><canvas id="ch-timeline"></canvas></div></div>
+        </div>
+      </div>
+
+      <!-- MESSAGES -->
+      <div class="tab-pane" id="tab-messages">
+        <div class="section-title" style="margin-bottom:10px">Messaging System</div>
+        <div class="msg-layout">
+          <div class="msg-sidebar">
+            <div class="msg-sidebar-hdr">ACTIVE CONVERSATIONS</div>
+            <div id="msg-contacts"></div>
+          </div>
+          <div class="msg-main" id="msg-main">
+            <div class="msg-empty-state"><div style="font-size:40px">💬</div><div>Select a student to start messaging</div></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- REPORTS -->
+      <div class="tab-pane" id="tab-reports">
+        <div class="section-hdr">
+          <div>
+            <div class="section-title">Exam Reports — Auto Received</div>
+            <div style="font-size:11px;color:var(--t2);margin-top:2px;font-family:'JetBrains Mono',monospace">PDF reports automatically received after each student submits their exam</div>
+          </div>
+          <div style="display:flex;gap:8px;align-items:center">
+            <span class="badge b-c"><span id="rep-count">0</span> REPORTS</span>
+            <button onclick="exportAllReports()" style="padding:8px 16px;border-radius:6px;border:1px solid var(--grn3);background:rgba(0,255,157,.06);color:var(--grn);font-size:11px;font-weight:700;cursor:pointer;transition:.2s;font-family:'Exo 2',sans-serif" onmouseover="this.style.background='var(--grn)';this.style.color='#000'" onmouseout="this.style.background='rgba(0,255,157,.06)';this.style.color='var(--grn)'">↓ EXPORT ALL</button>
+          </div>
+        </div>
+
+        <!-- Registered Students Section -->
+        <div style="background:var(--bg2);border:1px solid var(--bdr);border-radius:10px;padding:16px;margin-bottom:14px">
+          <div style="font-family:'Orbitron',monospace;font-size:12px;font-weight:700;letter-spacing:1px;color:var(--t1);margin-bottom:12px;display:flex;align-items:center;gap:8px">
+            👥 REGISTERED STUDENTS
+            <span class="badge b-g" id="reg-count">0 registered</span>
+          </div>
+          <div class="stu-tbl-hdr" style="grid-template-columns:2fr 1fr 1fr 1fr 1fr">
+            <span>STUDENT</span><span>ID</span><span>DEPT</span><span>STATUS</span><span>LAST LOGIN</span>
+          </div>
+          <div id="reg-stu-list"></div>
+        </div>
+
+        <!-- Received Reports -->
+        <div id="reports-container">
+          <div style="text-align:center;padding:40px;color:var(--t3);font-family:'JetBrains Mono',monospace;font-size:12px">
+            <div style="font-size:48px;margin-bottom:12px;opacity:.3">📨</div>
+            <div>No reports received yet.</div>
+            <div style="font-size:10px;margin-top:6px;color:var(--t4)">Reports appear here automatically when students submit their exams.</div>
+          </div>
+        </div>
+      </div>
+
+    </div><!-- /adm-main -->
+
+    <!-- RIGHT PANEL -->
+    <div class="adm-right">
+      <div class="arp-sec" style="flex-shrink:0">
+        <div class="detail-pane" id="dp">
+          <div class="dp-name" id="dp-name">Select a Student</div>
+          <div class="dp-grid" id="dp-grid">
+            <div class="dp-it">ID<span id="dp-id">—</span></div>
+            <div class="dp-it">INTEGRITY<span id="dp-int">—</span></div>
+            <div class="dp-it">VIOLATIONS<span id="dp-viol">—</span></div>
+            <div class="dp-it">STATUS<span id="dp-status">—</span></div>
+          </div>
+          <!-- LIVE VIDEO OF SELECTED STUDENT -->
+          <div class="dp-vid-box" id="dp-vid-box" style="display:none">
+            <video id="dp-vid" autoplay muted playsinline></video>
+            <canvas id="dp-cvs"></canvas>
+          </div>
+          <div class="dp-actions">
+            <button class="dp-abt w" onclick="adminAct('warn')">⚠WARN</button>
+            <button class="dp-abt d" onclick="adminAct('terminate')">✕END</button>
+            <button class="dp-abt s" onclick="adminAct('clear')">✓CLR</button>
+            <button class="dp-abt m" onclick="adminAct('msg')">✉MSG</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="arp-sec" style="padding:10px 12px;background:var(--bg2)">
+        <div style="font-family:'JetBrains Mono',monospace;font-size:8px;color:var(--t2);letter-spacing:1.5px;margin-bottom:7px">⬡ CLAUDE AI ANALYST</div>
+        <button class="rep-btn" id="rep-btn" onclick="genReport()">⬡ GENERATE AI REPORT</button>
+      </div>
+      <div class="rep-out" id="rep-out"><span style="color:var(--t4)">AI integrity report will appear here…</span></div>
+
+      <div class="arp-sec" style="flex-shrink:0">
+        <div class="arp-hdr">⚡ LIVE ALERTS <span id="adm-alr-cnt" class="safe" style="font-family:'JetBrains Mono',monospace;font-size:10px">0</span></div>
+      </div>
+      <div class="adm-feed" id="adm-feed"></div>
+    </div>
+  </div>
+</div>
+
+<!-- CREATE/EDIT EXAM MODAL -->
+<div class="overlay hidden" id="exam-modal">
+  <div class="modal-box">
+    <button class="modal-close" onclick="closeModal('exam-modal')">✕</button>
+    <div class="modal-title" id="em-title">CREATE NEW EXAM</div>
+    <div class="modal-sub" id="em-sub">Configure exam settings and proctoring rules</div>
+    <input type="hidden" id="em-editing-id" value=""/>
+    <div class="modal-2col">
+      <div class="fg"><div class="fl">EXAM TITLE</div><input class="fi" id="em-etitle" placeholder="e.g. CS Final Exam 2025"/></div>
+      <div class="fg"><div class="fl">EXAM CODE</div><input class="fi" id="em-code" placeholder="e.g. CS401-FINAL"/></div>
+    </div>
+    <div class="modal-2col">
+      <div class="fg"><div class="fl">SUBJECT</div>
+        <select class="fi" id="em-sub">
+          <option>Computer Science</option><option>Software Engineering</option>
+          <option>Database Management</option><option>Computer Networks</option>
+          <option>Mathematics</option><option>Physics</option>
+          <option>Aptitude Test</option><option>Logical Reasoning</option>
+          <option>Web Technology</option><option>Python Programming</option>
+          <option>SQL & Database</option><option>Data Science</option>
+          <option>Machine Learning</option>
+        </select>
+      </div>
+      <div class="fg"><div class="fl">DURATION (MINUTES)</div><input class="fi" id="em-dur" type="number" value="60" min="15" max="180"/></div>
+    </div>
+    <div class="modal-2col">
+      <div class="fg"><div class="fl">TOTAL MARKS</div><input class="fi" id="em-marks" type="number" value="100"/></div>
+      <div class="fg"><div class="fl">PASSING MARKS</div><input class="fi" id="em-pass" type="number" value="40"/></div>
+    </div>
+    <div class="fg"><div class="fl">DESCRIPTION / INSTRUCTIONS</div><textarea class="fi" id="em-desc" rows="2" style="height:60px;resize:vertical" placeholder="Exam scope and special instructions…"></textarea></div>
+    <div style="background:rgba(0,245,255,.04);border:1px solid rgba(0,245,255,.12);border-radius:8px;padding:14px;margin-top:4px">
+      <div style="font-family:'JetBrains Mono',monospace;font-size:9px;color:var(--t2);letter-spacing:1.5px;margin-bottom:10px">PROCTORING SETTINGS</div>
+      <div class="settings-check-grid">
+        <label><input type="checkbox" id="ps-cam" checked/> Camera Required</label>
+        <label><input type="checkbox" id="ps-fs" checked/> Fullscreen Required</label>
+        <label><input type="checkbox" id="ps-paste" checked/> Block Copy-Paste</label>
+        <label><input type="checkbox" id="ps-ai" checked/> AI Face Detection</label>
+        <label><input type="checkbox" id="ps-audio" checked/> Audio Monitoring</label>
+        <label><input type="checkbox" id="ps-obj" checked/> Object Detection</label>
+      </div>
+      <div style="display:flex;gap:16px;margin-top:10px;align-items:center;font-size:12px;flex-wrap:wrap">
+        <span style="color:var(--t2)">Max tab switches:</span>
+        <input type="number" class="fi" id="ps-tabs" value="2" min="0" max="10" style="width:60px;padding:5px 9px;font-size:11px"/>
+        <span style="color:var(--t2)">Max violations before flag:</span>
+        <input type="number" class="fi" id="ps-maxv" value="5" min="1" max="20" style="width:60px;padding:5px 9px;font-size:11px"/>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn-cancel" onclick="closeModal('exam-modal')">Cancel</button>
+      <button class="btn-confirm" onclick="saveExam()">SAVE EXAM →</button>
+    </div>
+  </div>
+</div>
+
+<!-- ADD STUDENT MODAL -->
+<div class="overlay hidden" id="stu-modal">
+  <div class="modal-box">
+    <button class="modal-close" onclick="closeModal('stu-modal')">✕</button>
+    <div class="modal-title">ADD STUDENT</div>
+    <div class="modal-sub">Manually register a student account</div>
+    <div class="modal-2col">
+      <div class="fg"><div class="fl">FIRST NAME</div><input class="fi" id="sm-fn" placeholder="First name"/></div>
+      <div class="fg"><div class="fl">LAST NAME</div><input class="fi" id="sm-ln" placeholder="Last name"/></div>
+    </div>
+    <div class="fg"><div class="fl">EMAIL</div><input class="fi" id="sm-em" type="email" placeholder="student@email.com"/></div>
+    <div class="modal-2col">
+      <div class="fg"><div class="fl">STUDENT ID</div><input class="fi" id="sm-sid" placeholder="STU2025009"/></div>
+      <div class="fg"><div class="fl">DEPARTMENT</div>
+        <select class="fi" id="sm-dept">
+          <option>Computer Science</option><option>Information Technology</option>
+          <option>Electronics</option><option>Mechanical</option>
+        </select>
+      </div>
+    </div>
+    <div class="fg"><div class="fl">TEMPORARY PASSWORD</div><input class="fi" id="sm-pw" type="password" placeholder="Min 6 chars"/></div>
+    <div class="modal-footer">
+      <button class="btn-cancel" onclick="closeModal('stu-modal')">Cancel</button>
+      <button class="btn-confirm v" onclick="saveStudent()">ADD STUDENT →</button>
+    </div>
+  </div>
+</div>
+
+<!-- VIEW EXAM MODAL -->
+<div class="overlay hidden" id="view-exam-modal">
+  <div class="modal-box">
+    <button class="modal-close" onclick="closeModal('view-exam-modal')">✕</button>
+    <div class="modal-title" id="vem-title">EXAM DETAILS</div>
+    <div id="vem-body" style="margin-top:12px"></div>
+    <div class="modal-footer">
+      <button class="btn-cancel" onclick="closeModal('view-exam-modal')">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- ALERT MODAL -->
+<div class="alert-overlay hidden" id="alert-mo">
+  <div class="alert-box">
+    <div class="alert-title" id="mo-title">Alert</div>
+    <div class="alert-body" id="mo-body">—</div>
+    <button class="alert-ok" id="mo-ok" onclick="closeAlert()">OK</button>
+  </div>
+</div>
+
+<!-- App logic -->
+<script src="app.js"></script>
+</body>
+</html>
