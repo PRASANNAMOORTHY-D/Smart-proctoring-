@@ -803,7 +803,7 @@ function startExamAI(){
     renderFaceCanvas(can,vid,dets);
     processFace(dets);
     updateAudio();
-    if(tick%5===0&&!APP.stream) simObjects(); // sim only when no real camera
+    // Object detection is now handled by detectObjectsAI() via setInterval in startPhoneDetection()
     if(tick%7===0)updateScreen();
     setTimeout(()=>requestAnimationFrame(loop), 280);
   };
@@ -829,8 +829,8 @@ async function processFace(dets){
     document.getElementById('fv').innerHTML=`<span class="safe">${c}%</span>`;
     document.getElementById('mf-face').style.width=c+'%';
 
-    // GAZE
-    if(dets[0].landmarks){
+    // GAZE — face-api.js fallback; skipped when MediaPipe already supplied gaze
+    if(dets[0].landmarks && !APP._lastServerGaze){
       const g=estimateGaze(dets[0].landmarks);
       const dirs={CENTER:'<span class="safe">CENTER</span>',LEFT:'<span class="warn">LEFT ←</span>',RIGHT:'<span class="warn">RIGHT →</span>',UP:'<span class="warn">UP ↑</span>'};
       document.getElementById('gv').innerHTML=dirs[g]||dirs.CENTER;
@@ -847,6 +847,8 @@ async function processFace(dets){
         document.getElementById('mf-gaze').style.width='92%';document.getElementById('mf-gaze').style.background='var(--grn)';
       }
     }
+    // Reset MediaPipe gaze flag so face-api runs next tick if server doesn't respond
+    APP._lastServerGaze = null;
 
     // EXPRESSION
     if(dets[0].expressions){
@@ -910,94 +912,230 @@ function showProctorToast(msg, type='warn'){
   setTimeout(()=>t.remove(),5000);
 }
 
-// ── ENHANCED MOBILE PHONE & OBJECT DETECTION ──
-const objCool={last:0};
-let phoneDetectLoop=null;
+// ════════════════════════════════════════════════════════════════════
+//  YOLOV8 AI OBJECT DETECTION  (replaces heuristic pixel scanning)
+//  Calls Python FastAPI server at http://localhost:8000/detect
+//  Falls back to simulated detection if AI server is not running
+// ════════════════════════════════════════════════════════════════════
 
-function startPhoneDetection(vid, can){
-  if(phoneDetectLoop) return;
-  phoneDetectLoop = setInterval(()=>{
-    detectPhoneHeuristic(vid, can);
-  }, 2000);
+const AI_SERVER = 'http://localhost:8000';
+const objCool   = { last: 0 };
+let   phoneDetectLoop = null;
+let   aiServerOnline  = null;  // null=unknown, true=online, false=offline
+
+// ── Check if the AI server is reachable (called once at startup) ──
+async function checkAIServer() {
+  try {
+    const res = await fetch(`${AI_SERVER}/health`, { signal: AbortSignal.timeout(3000) });
+    const data = await res.json();
+    aiServerOnline = true;
+    const yoloStatus = data.yolo_available
+      ? '✅ YOLOv8 ready'
+      : '⚠️ YOLO unavailable (OpenCV only)';
+    console.log(`[AI Server] Online — ${yoloStatus}`);
+    setMod('obj', '', `AI Server Online — ${yoloStatus}`, 'AI', 'b-c');
+  } catch (e) {
+    aiServerOnline = false;
+    console.warn('[AI Server] Offline — falling back to simulation');
+    setMod('obj', 'warn-state', 'AI server offline — using fallback', 'SIM', 'b-a');
+  }
 }
 
-function detectPhoneHeuristic(vid, can){
-  if(!vid||vid.readyState<2||vid.videoWidth===0) return;
-  try{
-    const tmp = document.createElement('canvas');
-    tmp.width=160; tmp.height=120;
-    const ctx2 = tmp.getContext('2d');
-    ctx2.drawImage(vid,0,0,160,120);
-    const data = ctx2.getImageData(0,0,160,120).data;
+// ── Capture a JPEG frame from the video element ──
+function captureFrame(vid, width = 320, height = 240) {
+  const canvas = document.createElement('canvas');
+  canvas.width  = width;
+  canvas.height = height;
+  canvas.getContext('2d').drawImage(vid, 0, 0, width, height);
+  return canvas;
+}
 
-    // Heuristic: scan for rectangular bright/dark contrast regions in hand areas
-    // Phone typically appears as a bright rectangle held near face/side
-    let brightPixels=0, darkRectangleScore=0, edgeContrast=0;
-    for(let y=40;y<100;y++){
-      for(let x=0;x<160;x++){
-        const idx=(y*160+x)*4;
-        const r=data[idx],g=data[idx+1],b=data[idx+2];
-        const brightness=(r+g+b)/3;
-        if(brightness>200) brightPixels++;
-        // Check for sharp horizontal edges (phone screen boundary)
-        if(x>0){
-          const pidx=(y*160+(x-1))*4;
-          const pb=(data[pidx]+data[pidx+1]+data[pidx+2])/3;
-          if(Math.abs(brightness-pb)>60) edgeContrast++;
-        }
+// ── Main AI detection function — called every 3 s during exam ──
+async function detectObjectsAI(vid) {
+  if (!vid || vid.readyState < 2 || vid.videoWidth === 0) return;
+
+  // Throttle: don't call more than once per 3 seconds
+  const now = Date.now();
+  if (now - objCool.last < 3000) return;
+  objCool.last = now;
+
+  // If AI server is confirmed offline, use fallback immediately
+  if (aiServerOnline === false) {
+    detectObjectsFallback();
+    return;
+  }
+
+  try {
+    // Capture frame as JPEG blob
+    const canvas = captureFrame(vid, 320, 240);
+    const blob   = await new Promise(res => canvas.toBlob(res, 'image/jpeg', 0.80));
+
+    const formData = new FormData();
+    formData.append('file', blob, 'frame.jpg');
+
+    const res = await fetch(`${AI_SERVER}/detect`, {
+      method: 'POST',
+      body:   formData,
+      signal: AbortSignal.timeout(5000),   // 5 s timeout
+    });
+
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+
+    aiServerOnline = true;
+    handleAIResults(data);
+
+  } catch (e) {
+    console.warn('[AI Detect] Request failed:', e.message);
+    aiServerOnline = false;
+    detectObjectsFallback();
+  }
+}
+
+// ════════════════════════════════════════════════════════════════════
+//  handleAIResults — YOLOv8 + MediaPipe server response handler
+//  UPDATED: MediaPipe gaze now overrides face-api.js gaze each tick
+// ════════════════════════════════════════════════════════════════════
+function handleAIResults(data) {
+  const {
+    banned,
+    multi_person,
+    person_count,
+    inference_ms,
+    gaze        = null,   // MediaPipe: 'CENTER'|'LEFT'|'RIGHT'|'UP'|'DOWN'
+    gaze_away   = false,  // true when gaze !== 'CENTER'
+    faces       = [],     // [{x,y,w,h,confidence}] from MediaPipe
+    landmarks   = [],     // key facial landmark points
+  } = data;
+
+  // ── 1. MEDIAPIPE GAZE ──
+  // When the AI server returns gaze, it overrides face-api.js this tick.
+  if (gaze !== null && gaze !== undefined) {
+    APP._lastServerGaze = gaze; // processFace() checks this flag
+
+    const dirs = {
+      LEFT:  '<span class="warn">LEFT ←</span>',
+      RIGHT: '<span class="warn">RIGHT →</span>',
+      UP:    '<span class="warn">UP ↑</span>',
+      DOWN:  '<span class="warn">DOWN ↓</span>',
+      CENTER:'<span class="safe">CENTER</span>',
+    };
+    document.getElementById('gv').innerHTML = dirs[gaze] || dirs.CENTER;
+
+    if (gaze_away) {
+      setMod('gaze', 'warn-state', `Gaze: ${gaze} (MediaPipe)`, 'AWAY', 'b-a');
+      document.getElementById('mf-gaze').style.width      = '20%';
+      document.getElementById('mf-gaze').style.background = 'var(--amber)';
+      // Prolonged-gaze violation with 5 s cooldown
+      const gazeKey = `server_gaze_${gaze}`;
+      if (!vCoolMap[gazeKey] || Date.now() - vCoolMap[gazeKey] > 5000) {
+        vCoolMap[gazeKey] = Date.now();
+        if (!gazeAwayT) gazeAwayT = setTimeout(() => {
+          addViol(`Prolonged gaze ${gaze} (MediaPipe)`, 'med', '👁️');
+          deductInt(4);
+          gazeAwayT = null;
+        }, 4000);
       }
+    } else {
+      if (gazeAwayT) { clearTimeout(gazeAwayT); gazeAwayT = null; }
+      setMod('gaze', '', 'Looking at screen (MediaPipe)', 'OK', 'b-g');
+      document.getElementById('mf-gaze').style.width      = '92%';
+      document.getElementById('mf-gaze').style.background = 'var(--grn)';
     }
-    // Phone-like rectangular bright area heuristic
-    const brightRatio = brightPixels/(60*160);
-    const edgeRatio = edgeContrast/(60*160);
-    const phoneScore = (brightRatio>.35&&edgeRatio>.08) ? 1 : 0;
+  }
 
-    // Probabilistic detection (realistic ~15% chance + heuristic triggers)
-    const now=Date.now();
-    if(now-objCool.last<15000) return;
-    const trigger = phoneScore>0 || Math.random()<0.018;
-    if(!trigger) return;
+  // ── 2. MEDIAPIPE MULTI-PERSON / NO-FACE CHECK ──
+  if (person_count > 1) {
+    const k = `multi_mp_${person_count}`;
+    if (!vCoolMap[k] || Date.now() - vCoolMap[k] > 8000) {
+      vCoolMap[k] = Date.now();
+      setMod('multi', 'alert', `⚠ ${person_count} FACES (MediaPipe)`, person_count, 'b-r');
+      document.getElementById('mf-multi').style.width      = '95%';
+      document.getElementById('mf-multi').style.background = 'var(--red)';
+      addViol(`CRITICAL: ${person_count} persons detected by MediaPipe`, 'crit', '👥');
+      deductInt(20);
+    }
+  } else if (person_count === 0 && faces.length === 0 && gaze !== null) {
+    const k = 'mp_no_face';
+    if (!vCoolMap[k] || Date.now() - vCoolMap[k] > 8000) {
+      vCoolMap[k] = Date.now();
+      setMod('face', 'alert', 'NO FACE (MediaPipe)', '!', 'b-r');
+    }
+  }
 
-    objCool.last=now;
-    const objs=[
-      {name:'Mobile phone 📱',sev:'crit',deduct:15},
-      {name:'Reference book 📚',sev:'high',deduct:10},
-      {name:'Earphone / headset 🎧',sev:'high',deduct:10},
-      {name:'Smartwatch ⌚',sev:'med',deduct:7},
-      {name:'Secondary device 💻',sev:'crit',deduct:15},
-    ];
-    // Weight mobile phone higher for realism
-    const weights=[40,15,15,15,15];
-    let rand=Math.random()*100, cum=0, chosen=objs[0];
-    for(let i=0;i<objs.length;i++){ cum+=weights[i]; if(rand<=cum){chosen=objs[i];break;} }
+  // ── 3. YOLOV8 BANNED OBJECT DETECTION ──
+  if (banned && banned.length > 0) {
+    const top = [...banned].sort((a, b) =>
+      ['crit','high','med','low'].indexOf(a.sev) -
+      ['crit','high','med','low'].indexOf(b.sev)
+    )[0];
+    setMod('obj', 'alert', `⚠ ${top.label} detected`, 'ALERT', 'b-r');
+    document.getElementById('mf-obj').style.width      = '92%';
+    document.getElementById('mf-obj').style.background = 'var(--red)';
+    banned.forEach(obj => {
+      const coolKey = `obj_${obj.class}`;
+      if (!vCoolMap[coolKey] || Date.now() - vCoolMap[coolKey] > 10000) {
+        vCoolMap[coolKey] = Date.now();
+        addViol(
+          `Prohibited object: ${obj.label} ${obj.icon} (${(obj.confidence*100).toFixed(0)}% conf)`,
+          obj.sev, obj.icon
+        );
+        deductInt(obj.deduct);
+        showProctorToast(
+          `${obj.icon} DETECTED: ${obj.label} — Remove immediately! (${(obj.confidence*100).toFixed(0)}% confidence)`,
+          'danger'
+        );
+      }
+    });
+    setTimeout(() => {
+      setMod('obj', '', 'Environment clear', 'CLEAR', 'b-g');
+      document.getElementById('mf-obj').style.width = '2%';
+    }, 8000);
+  } else {
+    const ms = inference_ms != null ? `${inference_ms}ms` : '';
+    setMod('obj', '', `Clear ${ms}`, 'CLEAR', 'b-g');
+    document.getElementById('mf-obj').style.width = '2%';
+  }
+}
 
-    setMod('obj','alert',`⚠ ${chosen.name} detected`,'ALERT','b-r');
-    document.getElementById('mf-obj').style.width='92%';
-    document.getElementById('mf-obj').style.background='var(--red)';
-    addViol(`Prohibited object: ${chosen.name}`,'high','📱');
-    deductInt(chosen.deduct);
+// ── Fallback: simulation when AI server is offline ──
+function detectObjectsFallback() {
+  if (Math.random() > 0.015) return;  // ~1.5% chance per call
+  const objs = [
+    { label:'Mobile phone',    icon:'📱', sev:'crit', deduct:15 },
+    { label:'Reference book',  icon:'📚', sev:'high', deduct:10 },
+    { label:'Earphone/headset',icon:'🎧', sev:'high', deduct:10 },
+    { label:'Smartwatch',      icon:'⌚', sev:'med',  deduct:7  },
+    { label:'Secondary device',icon:'💻', sev:'crit', deduct:15 },
+  ];
+  const obj = objs[Math.floor(Math.random() * objs.length)];
+  setMod('obj', 'alert', `⚠ ${obj.label} detected`, 'SIM', 'b-a');
+  document.getElementById('mf-obj').style.width     = '88%';
+  document.getElementById('mf-obj').style.background = 'var(--amber)';
+  addViol(`[Simulated] Prohibited object: ${obj.label} ${obj.icon}`, obj.sev, obj.icon);
+  deductInt(obj.deduct);
+  showProctorToast(`${obj.icon} [SIM] ${obj.label} detected — AI server offline`, 'warn');
+  setTimeout(() => {
+    setMod('obj', '', 'Environment clear', 'CLEAR', 'b-g');
+    document.getElementById('mf-obj').style.width = '2%';
+  }, 6000);
+}
 
-    // Show proctor toast
-    showProctorToast(`📱 OBJECT DETECTED: ${chosen.name} — Remove immediately!`,'danger');
-
-    setTimeout(()=>{
-      setMod('obj','','Environment clear','CLEAR','b-g');
-      document.getElementById('mf-obj').style.width='2%';
-    },8000);
-  }catch(e){}
+// ── Keep startPhoneDetection name so stopMedia() cleanup still works ──
+function startPhoneDetection(vid, can) {
+  if (phoneDetectLoop) return;
+  // Check AI server availability once on start
+  checkAIServer();
+  phoneDetectLoop = setInterval(() => {
+    detectObjectsAI(vid);
+  }, 3000);   // call every 3 seconds
 }
 
 function simObjects(){
-  // Legacy fallback when no camera — kept for admin sim
-  if(Math.random()>.015||Date.now()-objCool.last<15000)return;
+  // Used by admin dashboard simulation loop — delegates to shared fallback
+  if(Date.now()-objCool.last<10000)return;
   objCool.last=Date.now();
-  const objs=['Mobile phone 📱','Reference book 📚','Earphone / headset 🎧','Second screen 💻','Smartwatch ⌚'];
-  const obj=objs[Math.floor(Math.random()*objs.length)];
-  setMod('obj','alert',`⚠ ${obj} detected`,'ALERT','b-r');
-  document.getElementById('mf-obj').style.width='88%';document.getElementById('mf-obj').style.background='var(--red)';
-  addViol(`Prohibited object: ${obj}`,'high','📱');deductInt(12);
-  showProctorToast(`📱 OBJECT DETECTED: ${obj} — Remove immediately!`,'danger');
-  setTimeout(()=>{setMod('obj','','Environment clear','CLEAR','b-g');document.getElementById('mf-obj').style.width='2%';},6000);
+  detectObjectsFallback();
 }
 function updateScreen(){
   const acts=['Normal interaction','Normal interaction','Normal interaction','Rapid scrolling pattern','Excessive cursor movement'];
@@ -1395,17 +1533,13 @@ function renderDashboard(){
 let adminMasterVid = null;
 
 async function ensureAdminStream(){
-  // If student already took exam, reuse that stream
+  // Reuse existing student stream if available
   if(APP.stream) return APP.stream;
-  // Otherwise request camera fresh for admin monitoring
-  try{
-    APP.stream = await navigator.mediaDevices.getUserMedia({
-      video:{width:640,height:480,facingMode:'user',frameRate:{ideal:30}},
-      audio:false
-    });
-    initAudio();
-  }catch(e){ APP.stream=null; }
-  return APP.stream;
+  // In admin-only mode (no student logged in on this device),
+  // do NOT grab the webcam — each student has their own camera.
+  // Only request camera if we actually need it for something.
+  // Return null so all cards fall back to animated simulation.
+  return null;
 }
 
 function getOrCreateMasterVid(){
@@ -1483,20 +1617,30 @@ function renderStudentCard(container,st,idx,mini=false){
 }
 
 async function attachVideoToCard(vidId, canId, st, idx, mini){
-  // Ensure we have a stream
-  if(!APP.stream) await ensureAdminStream();
   const vid = document.getElementById(vidId);
   const can = document.getElementById(canId);
   if(!vid || !can) return;
 
-  if(APP.stream){
-    // FIX 4: each card gets its OWN MediaStream wrapper around the same video track
-    // so reassigning srcObject on one element doesn't affect all others
+  // ── KEY FIX: only show real webcam for the student who is actively
+  // logged in and writing the exam on THIS device.
+  // Every other student card gets an animated AI simulation — because
+  // in a real deployment each student has their OWN camera on their own
+  // device; the admin sees live feeds via WebRTC/Socket.io, not the
+  // admin's local webcam duplicated across all cards.
+  //
+  // Detect "active student on this device":
+  //   APP.student is set when a student logs in on this browser tab.
+  //   APP.stream  is the webcam grabbed during that student's setup.
+  const activeStudentId = APP.student?.sid || APP.student?.id || null;
+  const isThisStudentsCard = activeStudentId && st.id === activeStudentId;
+
+  if(APP.stream && isThisStudentsCard){
+    // ── Real webcam — only for the card matching the logged-in student ──
     try{
       const tracks = APP.stream.getVideoTracks();
       const cardStream = tracks.length
-        ? new MediaStream([tracks[0]])   // independent object, same underlying track
-        : APP.stream;                    // fallback if no video tracks
+        ? new MediaStream([tracks[0]])
+        : APP.stream;
       vid.srcObject = cardStream;
       await vid.play();
       await new Promise(res=>{
@@ -1510,6 +1654,8 @@ async function attachVideoToCard(vidId, canId, st, idx, mini){
       runSimCanvasLoop(can, st, mini);
     }
   } else {
+    // ── Animated simulation for all other students ──
+    // In production replace this with WebRTC stream per student.
     vid.style.display='none';
     runSimCanvasLoop(can, st, mini);
   }
@@ -2213,7 +2359,10 @@ function startAdminLoop(){
     APP.students.forEach((st,i)=>{
       [`sc-m-${i}`,`sc-d-${i}`].forEach(cid=>{
         const c=document.getElementById(cid);
-        if(c&&!(i===0&&APP.stream))drawSimCanvas(c,st);
+        // Draw sim canvas for every student except the one actively
+        // writing the exam on this device (they get real webcam feed)
+        const activeId = APP.student?.sid || APP.student?.id || null;
+        if(c && st.id !== activeId) drawSimCanvas(c,st);
       });
     });
     // Random alert events

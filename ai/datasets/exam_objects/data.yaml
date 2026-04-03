@@ -1,0 +1,14 @@
+path: C:\Users\DELL\Desktop\new__exam\ai\datasets\exam_objects
+train: train/images
+val: valid/images
+test: test/images
+
+nc: 5
+names: ['book', 'extra_person', 'laptop', 'phone', 'student']
+
+roboflow:
+  workspace: nandishs-workspace
+  project: online-exam-proctoring-wjh05-sjiof
+  version: 2
+  license: CC BY 4.0
+  url: https://universe.roboflow.com/nandishs-workspace/online-exam-proctoring-wjh05-sjiof/dataset/2
