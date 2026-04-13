@@ -60,14 +60,102 @@ function connectSocket() {
     socket.on('admin:student-update', (upd) => {
       const st = APP.students.find(s => s.id === upd.id);
       if (st) {
+        const idx = APP.students.indexOf(st);
         st.score  = upd.intScore  ?? st.score;
         st.status = upd.status    ?? st.status;
         st.viol   = upd.violations?.length ?? st.viol;
-        const ibar = document.getElementById(`stu-ibar-${APP.students.indexOf(st)}`);
-        if (ibar) ibar.style.width = st.score + '%';
+        if(upd.violations?.length) st.vlist = upd.violations.map(v=>v.text||v);
+
+        // Push update into AI panel immediately
+        updateCardAIPanel(idx, {
+          faceConf:   st.faceConf   || 0,
+          gaze:       st.gaze       || 'Monitoring…',
+          gazeAway:   st.gazeAway   || false,
+          objAlert:   st.objAlert   || false,
+          lastObj:    st.lastObj    || 'Clear',
+          audioAlert: st.audioAlert || false,
+          audioLevel: st.audioLevel || 'LOW',
+          score:      st.score,
+          viol:       st.viol,
+          vlist:      st.vlist || [],
+          status:     st.status,
+        });
         updateTopStats();
       }
     });
+
+    // ════════════════════════════════════════════════════════════════
+    //  admin:ai-state — live AI data pushed from student browser
+    //  Updates face conf, gaze, objects, audio on admin card panels
+    // ════════════════════════════════════════════════════════════════
+    socket.on('admin:ai-state', ({ id, aiState }) => {
+      const st  = APP.students.find(s => s.id === id);
+      if (!st) return;
+      const idx = APP.students.indexOf(st);
+
+      // Store on student object for future card renders
+      st.faceConf   = aiState.faceConf;
+      st.gaze       = aiState.gaze;
+      st.gazeAway   = aiState.gazeAway;
+      st.objAlert   = aiState.objAlert;
+      st.lastObj    = aiState.lastObj;
+      st.audioAlert = aiState.audioAlert || false;
+      st.audioLevel = aiState.audioLevel || 'LOW';
+      if (aiState.intScore !== undefined) st.score = aiState.intScore;
+
+      // Live-update the rendered card AI panel
+      updateCardAIPanel(idx, {
+        faceConf:   aiState.faceConf   || 0,
+        gaze:       aiState.gaze       || 'Monitoring…',
+        gazeAway:   aiState.gazeAway   || false,
+        objAlert:   aiState.objAlert   || false,
+        lastObj:    aiState.lastObj    || 'Clear',
+        audioAlert: aiState.audioAlert || false,
+        audioLevel: aiState.audioLevel || 'LOW',
+        score:      st.score,
+        viol:       st.viol,
+        vlist:      st.vlist || [],
+        status:     st.status,
+      });
+
+      // Update overlay badges on camera cell
+      const statusBadge = document.getElementById(`sc-status-${idx}`);
+      if (statusBadge) {
+        statusBadge.className = `badge ${st.status==='flagged'?'b-r':st.status==='suspicious'?'b-a':'b-g'}`;
+        statusBadge.textContent = st.status.toUpperCase();
+      }
+      const scoreEl = document.getElementById(`sc-score-${idx}`);
+      if (scoreEl) scoreEl.textContent = st.score + '%';
+
+      // Red outline flash if no face detected
+      if (aiState.faceCount === 0) {
+        const cam = document.getElementById(`scc-m-${idx}`) || document.getElementById(`scc-d-${idx}`);
+        if (cam) {
+          cam.style.outline = '2px solid var(--red)';
+          setTimeout(() => { if (cam) cam.style.outline = ''; }, 2500);
+        }
+      }
+    });
+    // Live violation → immediately update the relevant student card
+    socket.on('admin:violation', ({ sid, violation, intScore }) => {
+      const st = APP.students.find(s => s.id === sid);
+      if(!st) return;
+      const idx = APP.students.indexOf(st);
+      if(violation){
+        if(!st.vlist) st.vlist=[];
+        st.vlist.unshift(violation.text || violation);
+        st.viol = (st.viol||0) + 1;
+      }
+      if(intScore !== undefined) st.score = intScore;
+      updateCardAIPanel(idx, {
+        faceConf:   st.faceConf||0,  gaze: st.gaze||'Monitoring…',
+        gazeAway:   st.gazeAway||false, objAlert: st.objAlert||false,
+        lastObj:    st.lastObj||'Clear', audioAlert: st.audioAlert||false,
+        audioLevel: st.audioLevel||'LOW',
+        score: st.score, viol: st.viol, vlist: st.vlist||[], status: st.status,
+      });
+    });
+
     socket.on('admin:report', (report) => {
       APP.adminReports = APP.adminReports || [];
       APP.adminReports.push(report);
@@ -90,6 +178,57 @@ function connectSocket() {
     });
 
     socket.on('disconnect', () => console.log('[Socket] disconnected'));
+
+    // ── WebRTC signaling — student side ──
+    // Admin requests an offer → create peer connection and send offer
+    socket.on('webrtc:request-offer', async ({ adminSocketId }) => {
+      await createStudentPeerConnection(adminSocketId);
+    });
+    // Admin sent answer → set remote description
+    socket.on('webrtc:answer', async ({ adminSocketId, sdp }) => {
+      const pc = APP._peerConns?.[adminSocketId];
+      if (pc && pc.signalingState !== 'stable') {
+        await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+      }
+    });
+    // ICE candidate from admin
+    socket.on('webrtc:ice-candidate', async ({ adminSocketId, candidate }) => {
+      const pc = APP._peerConns?.[adminSocketId];
+      if (pc && candidate) {
+        try { await pc.addIceCandidate(new RTCIceCandidate(candidate)); } catch(e) {}
+      }
+    });
+
+    // ── WebRTC signaling — admin side ──
+    // Student sent offer → set as remote, create answer
+    socket.on('webrtc:offer', async ({ sid, sdp }) => {
+      await handleAdminReceiveOffer(sid, sdp);
+    });
+    // ICE candidate from student
+    socket.on('webrtc:ice-candidate', async ({ sid, candidate }) => {
+      const pc = APP._adminPeerConns?.[sid];
+      if (pc && candidate) {
+        try { await pc.addIceCandidate(new RTCIceCandidate(candidate)); } catch(e) {}
+      }
+    });
+    // Student stopped their stream
+    socket.on('webrtc:stop', ({ sid }) => {
+      closeAdminPeerConn(sid);
+      // Revert card to sim canvas
+      const idx = APP.students.findIndex(s => s.id === sid);
+      if (idx >= 0) {
+        const can = document.getElementById(`sc-m-${idx}`);
+        const st  = APP.students[idx];
+        if (can && st) runSimCanvasLoop(can, st, false);
+      }
+    });
+
+    // Student is ready to stream — admin requests their WebRTC offer
+    socket.on('webrtc:student-ready', ({ sid }) => {
+      console.log(`[WebRTC-Admin] Student ${sid} is ready, requesting offer`);
+      socket.emit('webrtc:request-offer', { sid });
+    });
+
   } catch(e) {
     console.warn('[Socket] Could not connect:', e.message);
   }
@@ -780,6 +919,8 @@ function startExam(){
     const vid=document.getElementById('ev');vid.srcObject=APP.stream;vid.play();
     startExamAI();startTimer();buildQs();hookEvents();
     try{document.documentElement.requestFullscreen();}catch(e){}
+    // Start broadcasting this student's camera to admin via WebRTC
+    initStudentWebRTC();
   },100);
 }
 
@@ -825,6 +966,7 @@ async function processFace(dets){
   }else{
     if(noFaceT){clearTimeout(noFaceT);noFaceT=null;}
     const c=(dets[0].detection.score*100).toFixed(1);
+    APP._lastFaceConf = Math.round(dets[0].detection.score * 100); // for audio emit
     setMod('face','',`${c}% confidence`,c+'%','b-g');
     document.getElementById('fv').innerHTML=`<span class="safe">${c}%</span>`;
     document.getElementById('mf-face').style.width=c+'%';
@@ -887,6 +1029,25 @@ function updateAudio(){
     b.style.height=h+'px';b.style.background=level>.65?'var(--red)':level>.4?'var(--amber)':'var(--grn)';
   });
   const now=Date.now();
+  // Push audio level to admin cards every 2 s
+  if(socket && APP.student?.sid && now - (APP._lastAudioEmit||0) > 2000){
+    APP._lastAudioEmit = now;
+    socket.emit('student:ai-state', {
+      sid: APP.student.sid,
+      aiState: {
+        faceConf:   APP._lastFaceConf || 0,
+        faceCount:  1,
+        gaze:       APP._lastGazeForEmit || 'CENTER',
+        gazeAway:   false,
+        objAlert:   false,
+        lastObj:    'Clear',
+        audioAlert: level > 0.65,
+        audioLevel: level > 0.65 ? 'HIGH' : level > 0.4 ? 'MED' : 'LOW',
+        intScore:   APP.intScore,
+        riskScore:  100 - APP.intScore,
+      }
+    });
+  }
   if(level>.65&&now-audioCool.last>8000){
     audioCool.last=now;setMod('audio','alert','⚠ HIGH AUDIO DETECTED','HIGH','b-r');
     addViol('High audio level — external communication?','med','🎙️');deductInt(3);
@@ -1281,6 +1442,8 @@ function submitExam(auto=false){
 
   // Stop heartbeat
   clearInterval(APP._heartbeat);
+  // Stop WebRTC stream to admin
+  stopStudentWebRTC();
 }
 
 function showResultsView(result){
@@ -1489,13 +1652,15 @@ async function initAdmin(){
   document.getElementById('nb-msg').style.display='';
   startAdminLoop();
   ensureAdminStream().then(()=>{ getOrCreateMasterVid(); });
+  // Request live camera streams from all active students via WebRTC
+  setTimeout(requestAllStudentStreams, 1500);
 }
 
 function gotoTab(tab){
   APP.adminTab=tab;
   document.querySelectorAll('.nav-btn').forEach(b=>b.classList.toggle('active',b.dataset.tab===tab));
   document.querySelectorAll('.tab-pane').forEach(p=>p.classList.toggle('active',p.id==='tab-'+tab));
-  if(tab==='monitor')renderMonitorGrid();
+  if(tab==='monitor'){ renderMonitorGrid(); setTimeout(requestAllStudentStreams, 500); }
   if(tab==='analytics')initCharts();
   if(tab==='reports'){renderReports();renderRegisteredStudents();}
 }
@@ -1575,45 +1740,221 @@ function renderMonitorGrid(filter='all'){
 }
 
 function renderStudentCard(container,st,idx,mini=false){
-  const col = st.score>=80?'var(--grn)':st.score>=50?'var(--amber)':'var(--red)';
-  const cls = st.status==='flagged'?'flagged':st.status==='suspicious'?'susp':'';
-  const pfx = mini?'d':'m';
-  const canId = `sc-${pfx}-${idx}`;
-  const vidId = `sv-${pfx}-${idx}`;
+  const col    = st.score>=80?'var(--grn)':st.score>=50?'var(--amber)':'var(--red)';
+  const riskScore = 100 - st.score;
+  const riskCol   = riskScore>=60?'var(--red)':riskScore>=30?'var(--amber)':'var(--grn)';
+  const cls    = st.status==='flagged'?'flagged':st.status==='suspicious'?'susp':'';
+  const pfx    = mini?'d':'m';
+  const canId  = `sc-${pfx}-${idx}`;
+  const vidId  = `sv-${pfx}-${idx}`;
+
+  // AI-panel module rows (only shown in full monitor view, not mini dashboard)
+  const aiPanel = mini ? '' : `
+    <div class="sc-ai-panel" id="sc-aip-${idx}">
+
+      <div class="sc-mod ${(st.faceConf||0)>0?'':' sc-mod-alert'}">
+        <span class="sc-mod-ico">👤</span>
+        <div class="sc-mod-body">
+          <div class="sc-mod-lbl">FACE DETECTION</div>
+          <div class="sc-mod-val" id="sc-face-${idx}">${st.faceConf?st.faceConf+'% conf':'Scanning…'}</div>
+          <div class="sc-mod-bar"><div class="sc-mod-bar-fill" id="sc-fbar-${idx}"
+            style="width:${st.faceConf||0}%;background:${(st.faceConf||0)>60?'var(--grn)':'var(--red)'}"></div></div>
+        </div>
+        <span class="sc-badge ${(st.faceConf||0)>60?'b-g':'b-r'}" id="sc-fbadge-${idx}">
+          ${(st.faceConf||0)>60?'OK':'!'}
+        </span>
+      </div>
+
+      <div class="sc-mod">
+        <span class="sc-mod-ico">👁️</span>
+        <div class="sc-mod-body">
+          <div class="sc-mod-lbl">EYE &amp; GAZE</div>
+          <div class="sc-mod-val" id="sc-gaze-${idx}">${st.gaze||'Monitoring…'}</div>
+        </div>
+        <span class="sc-badge ${st.gazeAway?'b-a':'b-g'}" id="sc-gbadge-${idx}">
+          ${st.gazeAway?'AWAY':'OK'}
+        </span>
+      </div>
+
+      <div class="sc-mod">
+        <span class="sc-mod-ico">📱</span>
+        <div class="sc-mod-body">
+          <div class="sc-mod-lbl">OBJECT DETECT</div>
+          <div class="sc-mod-val" id="sc-obj-${idx}">${st.lastObj||'Environment clear'}</div>
+        </div>
+        <span class="sc-badge ${st.objAlert?'b-r':'b-g'}" id="sc-obadge-${idx}">
+          ${st.objAlert?'ALERT':'CLEAR'}
+        </span>
+      </div>
+
+      <div class="sc-mod">
+        <span class="sc-mod-ico">🎙️</span>
+        <div class="sc-mod-body">
+          <div class="sc-mod-lbl">AUDIO</div>
+          <div class="sc-mod-val" id="sc-aud-${idx}">${st.audioLevel||'LOW'}</div>
+        </div>
+        <span class="sc-badge ${st.audioAlert?'b-r':'b-g'}" id="sc-aubadge-${idx}">
+          ${st.audioAlert?'HIGH':'LOW'}
+        </span>
+      </div>
+
+      <!-- Mini integrity + risk row -->
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;padding:4px 6px 0;border-top:1px solid rgba(17,34,54,.6)">
+        <div style="text-align:center">
+          <div style="font-family:'JetBrains Mono',monospace;font-size:7px;color:var(--t3);letter-spacing:1px">INTEGRITY</div>
+          <div style="font-family:'Orbitron',monospace;font-size:14px;font-weight:700;color:${col}" id="sc-int-${idx}">${st.score}%</div>
+        </div>
+        <div style="text-align:center">
+          <div style="font-family:'JetBrains Mono',monospace;font-size:7px;color:var(--t3);letter-spacing:1px">RISK</div>
+          <div style="font-family:'Orbitron',monospace;font-size:14px;font-weight:700;color:${riskCol}" id="sc-risk-${idx}">${riskScore}</div>
+        </div>
+      </div>
+
+      <!-- Recent violation tags -->
+      <div style="padding:4px 6px 5px;display:flex;gap:3px;flex-wrap:wrap;min-height:18px" id="sc-vtags-${idx}">
+        ${st.vlist.slice(0,3).map(v=>`<span style="background:rgba(255,36,68,.1);border:1px solid rgba(255,36,68,.25);border-radius:2px;padding:1px 4px;font-size:7px;color:var(--red);font-family:'JetBrains Mono',monospace">${v}</span>`).join('')}
+      </div>
+    </div>`;
 
   const div=document.createElement('div');
   div.className=`stu-card ${cls}${APP.adminSel===idx?' active-sel':''}`;
+  div.style.cssText = mini ? '' : 'display:flex;flex-direction:column;min-height:0';
   div.onclick=()=>selectStudent(idx);
   div.innerHTML=`
+    <!-- ── CAMERA CELL — always at top ── -->
     <div class="stu-cam-cell" id="scc-${pfx}-${idx}">
       <video id="${vidId}" autoplay muted playsinline
-        style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover;opacity:0.92"></video>
-      <canvas id="${canId}" style="position:absolute;inset:0;width:100%;height:100%"></canvas>
-      <div class="stu-hud">
+        style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover;opacity:1;z-index:1"></video>
+      <canvas id="${canId}"
+        style="position:absolute;inset:0;width:100%;height:100%;z-index:2"></canvas>
+      <div class="stu-hud" style="z-index:3">
         <div class="stu-hud-tl"></div><div class="stu-hud-tr"></div>
         <div class="stu-hud-bl"></div><div class="stu-hud-br"></div>
       </div>
-      <div class="stu-cam-overlay">
-        <span class="badge ${st.status==='flagged'?'b-r':st.status==='suspicious'?'b-a':'b-g'}" style="font-size:8px">${st.status.toUpperCase()}</span>
-        <span style="font-family:'JetBrains Mono',monospace;font-size:9px;color:${col}">${st.score}%</span>
-      </div>
-      <div style="position:absolute;top:5px;right:5px;display:flex;align-items:center;gap:4px;
-        background:rgba(0,0,0,.7);border-radius:3px;padding:2px 6px;
+      <!-- REC badge top-right -->
+      <div style="position:absolute;top:5px;right:5px;z-index:4;display:flex;align-items:center;gap:4px;
+        background:rgba(0,0,0,.75);border-radius:3px;padding:2px 6px;
         font-family:'JetBrains Mono',monospace;font-size:8px;color:var(--red)">
         <span style="width:5px;height:5px;background:var(--red);border-radius:50%;
           box-shadow:0 0 5px var(--red);animation:blink .6s infinite;display:inline-block"></span>REC
       </div>
+      <!-- Violations chip top-left -->
+      <div style="position:absolute;top:5px;left:5px;z-index:4;background:rgba(0,0,0,.75);
+        border-radius:3px;padding:2px 6px;font-family:'JetBrains Mono',monospace;font-size:8px;
+        color:${st.viol>5?'var(--red)':st.viol>2?'var(--amber)':'var(--grn)'}">
+        ⚡ <span id="sc-vcnt-${idx}">${st.viol}</span>V
+      </div>
+      <!-- Status + score overlay bottom -->
+      <div class="stu-cam-overlay" style="z-index:4">
+        <span class="badge ${st.status==='flagged'?'b-r':st.status==='suspicious'?'b-a':'b-g'}"
+          style="font-size:8px" id="sc-status-${idx}">${st.status.toUpperCase()}</span>
+        <div style="display:flex;gap:6px;align-items:center">
+          <span style="font-family:'JetBrains Mono',monospace;font-size:8px;color:${col}"
+            id="sc-score-${idx}">${st.score}%</span>
+          <span style="font-family:'JetBrains Mono',monospace;font-size:7px;color:${riskCol}">
+            RISK:${riskScore}</span>
+        </div>
+      </div>
     </div>
+
+    ${mini ? `
+    <!-- Mini dashboard card: simple info below camera -->
     <div class="stu-info-cell">
       <div class="stu-name-cell">${st.name}</div>
-      <div class="stu-meta-cell"><span>${st.id}</span><span id="stu-vcount-${idx}">${st.viol} violations</span></div>
-      <div class="int-bar"><div class="int-bar-fill" id="stu-ibar-${idx}" style="width:${st.score}%;background:${col}"></div></div>
-      <div class="stu-vtags">${st.vlist.slice(0,2).map(v=>`<span class="vtag">${v}</span>`).join('')}</div>
-    </div>`;
-  container.appendChild(div);
+      <div class="stu-meta-cell"><span>${st.id}</span>
+        <span id="stu-vcount-${idx}">${st.viol} violations</span></div>
+      <div class="int-bar">
+        <div class="int-bar-fill" id="stu-ibar-${idx}"
+          style="width:${st.score}%;background:${col}"></div></div>
+      <div class="stu-vtags">
+        ${st.vlist.slice(0,2).map(v=>`<span class="vtag">${v}</span>`).join('')}
+      </div>
+    </div>` : `
+    <!-- Monitor card: name bar then AI panel directly below camera -->
+    <div class="stu-name-bar">
+      <div style="display:flex;align-items:center;gap:7px">
+        <div style="width:22px;height:22px;border-radius:6px;background:linear-gradient(135deg,rgba(0,245,255,.15),rgba(176,96,255,.1));
+          border:1px solid var(--bdr2);display:flex;align-items:center;justify-content:center;
+          font-size:9px;font-weight:700;color:var(--cyan);font-family:'Orbitron',monospace">
+          ${st.name.charAt(0)}</div>
+        <div>
+          <div style="font-size:11px;font-weight:600;color:var(--t0)">${st.name}</div>
+          <div style="font-size:9px;color:var(--t2);font-family:'JetBrains Mono',monospace">
+            ${st.id}</div>
+        </div>
+      </div>
+      <span id="stu-vcount-${idx}" style="font-size:9px;color:${st.viol>5?'var(--red)':st.viol>2?'var(--amber)':'var(--t2)'};
+        font-family:'JetBrains Mono',monospace">${st.viol}V</span>
+    </div>
+    ${aiPanel}`}`;
 
-  // Attach video stream after DOM insertion
-  setTimeout(()=>attachVideoToCard(vidId, canId, st, idx, mini), 80);
+  container.appendChild(div);
+  setTimeout(()=>{
+    const liveStream = APP._liveStreams?.[st.id];
+    if(liveStream && !mini){
+      mountStudentStream(st.id, liveStream);
+    } else {
+      attachVideoToCard(vidId, canId, st, idx, mini);
+    }
+  }, 80);
+}
+
+// ── Live-update an existing student card's AI panel ──
+function updateCardAIPanel(idx, data){
+  const { faceConf, gaze, gazeAway, objAlert, lastObj, audioAlert, audioLevel, score, viol, vlist, status } = data;
+  const col     = score>=80?'var(--grn)':score>=50?'var(--amber)':'var(--red)';
+  const riskScore = 100 - score;
+  const riskCol   = riskScore>=60?'var(--red)':riskScore>=30?'var(--amber)':'var(--grn)';
+
+  // Face
+  const fEl  = document.getElementById(`sc-face-${idx}`);
+  const fBar = document.getElementById(`sc-fbar-${idx}`);
+  const fBdg = document.getElementById(`sc-fbadge-${idx}`);
+  if(fEl)  fEl.textContent  = faceConf ? faceConf+'% conf' : 'No face!';
+  if(fBar){ fBar.style.width = (faceConf||0)+'%'; fBar.style.background = (faceConf||0)>60?'var(--grn)':'var(--red)'; }
+  if(fBdg){ fBdg.textContent = (faceConf||0)>60?'OK':'!'; fBdg.className = 'sc-badge '+ ((faceConf||0)>60?'b-g':'b-r'); }
+
+  // Gaze
+  const gEl  = document.getElementById(`sc-gaze-${idx}`);
+  const gBdg = document.getElementById(`sc-gbadge-${idx}`);
+  if(gEl)  gEl.textContent  = gaze || 'Monitoring…';
+  if(gBdg){ gBdg.textContent = gazeAway?'AWAY':'OK'; gBdg.className = 'sc-badge '+(gazeAway?'b-a':'b-g'); }
+
+  // Object
+  const oEl  = document.getElementById(`sc-obj-${idx}`);
+  const oBdg = document.getElementById(`sc-obadge-${idx}`);
+  if(oEl)  oEl.textContent  = lastObj || 'Clear';
+  if(oBdg){ oBdg.textContent = objAlert?'ALERT':'CLEAR'; oBdg.className = 'sc-badge '+(objAlert?'b-r':'b-g'); }
+
+  // Audio
+  const aEl  = document.getElementById(`sc-aud-${idx}`);
+  const aBdg = document.getElementById(`sc-aubadge-${idx}`);
+  if(aEl)  aEl.textContent  = audioLevel || 'LOW';
+  if(aBdg){ aBdg.textContent = audioAlert?'HIGH':'LOW'; aBdg.className = 'sc-badge '+(audioAlert?'b-r':'b-g'); }
+
+  // Integrity + Risk
+  const iEl = document.getElementById(`sc-int-${idx}`);
+  const rEl = document.getElementById(`sc-risk-${idx}`);
+  if(iEl){ iEl.textContent = score+'%'; iEl.style.color = col; }
+  if(rEl){ rEl.textContent = riskScore; rEl.style.color = riskCol; }
+
+  // Violation count chip & score
+  const vcEl  = document.getElementById(`sc-vcnt-${idx}`);
+  const scEl  = document.getElementById(`sc-score-${idx}`);
+  const stEl  = document.getElementById(`sc-status-${idx}`);
+  const ibar  = document.getElementById(`stu-ibar-${idx}`);
+  if(vcEl) vcEl.textContent = viol;
+  if(scEl){ scEl.textContent = score+'%'; scEl.style.color = col; }
+  if(stEl){ stEl.textContent = status.toUpperCase(); stEl.className = 'badge '+(status==='flagged'?'b-r':status==='suspicious'?'b-a':'b-g'); }
+  if(ibar){ ibar.style.width = score+'%'; ibar.style.background = col; }
+
+  // Violation tags
+  const vtEl = document.getElementById(`sc-vtags-${idx}`);
+  if(vtEl && vlist && vlist.length){
+    vtEl.innerHTML = vlist.slice(0,3).map(v=>
+      `<span style="background:rgba(255,36,68,.1);border:1px solid rgba(255,36,68,.25);border-radius:2px;padding:1px 4px;font-size:7px;color:var(--red);font-family:'JetBrains Mono',monospace">${v}</span>`
+    ).join('');
+  }
 }
 
 async function attachVideoToCard(vidId, canId, st, idx, mini){
@@ -1661,26 +2002,93 @@ async function attachVideoToCard(vidId, canId, st, idx, mini){
   }
 }
 
-// Per-card face detection loop with proper cleanup
+// Per-card face detection loop
 function startCardFaceLoop(vid, can, st, idx, mini){
   const loopKey = `loop_${can.id}`;
-  APP[loopKey] = true; // each card has its own loop flag
+  APP[loopKey] = true;
 
+  const isRemote = !!(APP._liveStreams && APP._liveStreams[st.id]);
+
+  if(isRemote){
+    // ── REMOTE WebRTC stream: NO face-api (causes buffering) ──
+    // Just draw raw video onto canvas at low framerate
+    drawRemoteVideoLoop(vid, can, st, idx, loopKey);
+  } else {
+    // ── LOCAL stream: full face detection ──
+    drawLocalFaceLoop(vid, can, st, idx, mini, loopKey);
+  }
+}
+
+// Lightweight loop for WebRTC remote streams — no face-api, just video frame
+function drawRemoteVideoLoop(vid, can, st, idx, loopKey){
+  const loop = () => {
+    if(!APP[loopKey] || !document.getElementById(can?.id)) return;
+
+    const W = can.offsetWidth || 280;
+    const H = can.offsetHeight || 210;
+    if(can.width !== W || can.height !== H){ can.width = W; can.height = H; }
+
+    if(vid.readyState >= 2 && !vid.paused){
+      const ctx = can.getContext('2d');
+      // Draw video frame
+      ctx.drawImage(vid, 0, 0, W, H);
+      // Draw corner HUD brackets
+      const col = st.status==='flagged'?'#ff2444':st.status==='suspicious'?'#ffb800':'#00f5ff';
+      ctx.strokeStyle = col; ctx.lineWidth = 1.5; ctx.shadowBlur = 0;
+      const cs = 12;
+      [[0,0],[W,0],[0,H],[W,H]].forEach(([x,y],k)=>{
+        const sx=k%2?-1:1, sy=k<2?1:-1;
+        ctx.beginPath(); ctx.moveTo(x,y+sy*cs); ctx.lineTo(x,y); ctx.lineTo(x+sx*cs,y); ctx.stroke();
+      });
+      // LIVE label
+      ctx.fillStyle='rgba(255,36,68,.9)';
+      ctx.beginPath(); ctx.arc(W-10,10,4,0,Math.PI*2); ctx.fill();
+    }
+
+    const ibar = document.getElementById(`stu-ibar-${idx}`);
+    if(ibar) ibar.style.width = st.score+'%';
+
+    setTimeout(()=>requestAnimationFrame(loop), 100); // 10fps — smooth but light
+  };
+  requestAnimationFrame(loop);
+}
+
+// Full face detection loop for local admin stream
+async function drawLocalFaceLoop(vid, can, st, idx, mini, loopKey){
   const loop = async()=>{
-    if(!APP[loopKey] || !document.getElementById(can.id)) return;
-    if(can.offsetWidth === 0){ setTimeout(()=>requestAnimationFrame(loop), 500); return; }
+    if(!APP[loopKey] || !document.getElementById(can?.id)) return;
+    if(!can || can.offsetWidth === 0){ setTimeout(()=>requestAnimationFrame(loop), 500); return; }
 
-    // Sync canvas dimensions to its displayed size
     const rect = can.getBoundingClientRect();
     if(rect.width > 0 && (can.width !== Math.round(rect.width) || can.height !== Math.round(rect.height))){
-      can.width = Math.round(rect.width);
+      can.width  = Math.round(rect.width);
       can.height = Math.round(rect.height);
     }
 
-    const dets = await detectFaces(vid);
-    drawAdminFaceOverlay(can, vid, dets, st, mini);
+    if(vid.readyState >= 2){
+      const dets = await detectFaces(vid);
+      drawAdminFaceOverlay(can, vid, dets, st, mini);
 
-    // Update live integrity bar from real violations
+      if(!mini && dets && dets.length > 0){
+        const conf = Math.round(dets[0].detection.score * 100);
+        const gaze = dets[0].landmarks ? estimateGaze(dets[0].landmarks) : 'CENTER';
+        st.faceConf = conf; st.gaze = gaze; st.gazeAway = gaze !== 'CENTER';
+        updateCardAIPanel(idx, {
+          faceConf: conf, gaze, gazeAway: gaze !== 'CENTER',
+          objAlert: st.objAlert||false, lastObj: st.lastObj||'Clear',
+          audioAlert: st.audioAlert||false, audioLevel: st.audioLevel||'LOW',
+          score: st.score, viol: st.viol, vlist: st.vlist||[], status: st.status,
+        });
+      } else if(!mini && dets !== null){
+        updateCardAIPanel(idx, {
+          faceConf: 0, gaze: 'No face', gazeAway: false,
+          objAlert: st.objAlert||false, lastObj: st.lastObj||'Clear',
+          audioAlert: st.audioAlert||false, audioLevel: st.audioLevel||'LOW',
+          score: st.score, viol: st.viol, vlist: st.vlist||[], status: st.status,
+        });
+      }
+    }
+
     const ibar = document.getElementById(`stu-ibar-${idx}`);
     if(ibar) ibar.style.width = st.score+'%';
 
@@ -1689,11 +2097,49 @@ function startCardFaceLoop(vid, can, st, idx, mini){
   requestAnimationFrame(loop);
 }
 
-// Simulated canvas loop for when no stream
+// Simulated canvas loop — drives both the canvas animation AND the AI panel
 function runSimCanvasLoop(can, st, mini){
+  const idx = APP.students.indexOf(st);
+
+  // Generate realistic-looking simulated AI metrics that change over time
+  let simTick = 0;
+  const gazeOptions = ['CENTER','CENTER','CENTER','CENTER','LEFT','RIGHT','UP'];
+
   const loop=()=>{
     if(!document.getElementById(can.id)) return;
     drawSimCanvas(can, st);
+    simTick++;
+
+    // Update AI panel every 6th tick (every ~3-4 seconds) for non-mini cards
+    if(!mini && idx >= 0 && simTick % 6 === 0){
+      const simConf    = 80 + Math.floor(Math.random()*18);         // 80–97%
+      const simGaze    = gazeOptions[Math.floor(Math.random()*gazeOptions.length)];
+      const gazeAway   = simGaze !== 'CENTER';
+      const audioSpike = Math.random() < 0.08;                      // 8% chance
+      const objAlert   = st.objAlert || false;
+
+      // Write back to student object so violations/score stay in sync
+      st.faceConf  = simConf;
+      st.gaze      = simGaze;
+      st.gazeAway  = gazeAway;
+      st.audioAlert= audioSpike;
+      st.audioLevel= audioSpike ? 'HIGH' : 'LOW';
+
+      updateCardAIPanel(idx, {
+        faceConf:   st.status === 'active' ? simConf : 0,
+        gaze:       st.status === 'active' ? simGaze : 'N/A',
+        gazeAway:   st.status === 'active' ? gazeAway : false,
+        objAlert:   objAlert,
+        lastObj:    st.lastObj   || 'Environment clear',
+        audioAlert: audioSpike,
+        audioLevel: audioSpike ? 'HIGH' : 'LOW',
+        score:      st.score,
+        viol:       st.viol,
+        vlist:      st.vlist || [],
+        status:     st.status,
+      });
+    }
+
     setTimeout(()=>requestAnimationFrame(loop), mini ? 1000 : 600);
   };
   requestAnimationFrame(loop);
@@ -2383,6 +2829,19 @@ function startAdminLoop(){
       if(ev.col==='danger'&&Math.random()<.2&&st.status==='active'){
         st.status='suspicious';st.viol++;updateTopStats();
       }
+      // Update the card AI panel with latest status
+      const sidx = APP.students.indexOf(st);
+      if(sidx >= 0) updateCardAIPanel(sidx, {
+        faceConf:   st.faceConf   || 0,
+        gaze:       st.gaze       || 'Monitoring…',
+        gazeAway:   st.gazeAway   || false,
+        objAlert:   st.objAlert   || false,
+        lastObj:    st.lastObj    || 'Clear',
+        audioAlert: st.audioAlert || false,
+        audioLevel: st.audioLevel || 'LOW',
+        score: st.score, viol: st.viol,
+        vlist: st.vlist||[], status: st.status,
+      });
     }
     // Refresh reports badge
     const nbRep=document.getElementById('nb-reports');
@@ -2566,6 +3025,212 @@ function closeAlert(){
   document.getElementById('alert-mo').classList.add('hidden');
   if(alertConfirmCb){ alertConfirmCb(); alertConfirmCb=null; }
 }
+
+// ════════════════════════════════════════════════════════════════════
+//  WEBRTC — STUDENT SIDE
+//  Each student creates one RTCPeerConnection per connected admin.
+//  The student's camera track is added to the peer connection.
+//  All signaling goes through Socket.io via the Node.js server.
+// ════════════════════════════════════════════════════════════════════
+
+function initStudentWebRTC() {
+  if (!APP.stream || !socket) return;
+  APP._peerConns = APP._peerConns || {};
+  // Ask server to tell all connected admins to request an offer from us
+  socket.emit('webrtc:ready', { sid: APP.student?.sid });
+  console.log('[WebRTC-Student] Ready to stream');
+}
+
+async function createStudentPeerConnection(adminSocketId) {
+  if (!APP.stream) return;
+  APP._peerConns = APP._peerConns || {};
+
+  // Close any existing connection to this admin
+  if (APP._peerConns[adminSocketId]) {
+    APP._peerConns[adminSocketId].close();
+  }
+
+  const pc = new RTCPeerConnection({
+    iceServers: [
+      { urls: 'stun:stun.l.google.com:19302' },
+      { urls: 'stun:stun1.l.google.com:19302' },
+    ]
+  });
+  APP._peerConns[adminSocketId] = pc;
+
+  // Lower resolution stream to prevent buffering (320x240 @ 15fps)
+  const videoTrack = APP.stream.getVideoTracks()[0];
+  if (videoTrack) {
+    try {
+      await videoTrack.applyConstraints({
+        width:  { ideal: 320, max: 480 },
+        height: { ideal: 240, max: 360 },
+        frameRate: { ideal: 15, max: 20 },
+      });
+    } catch(e) {}
+    pc.addTrack(videoTrack, APP.stream);
+  }
+  const audioTrack = APP.stream.getAudioTracks()[0];
+  if (audioTrack) pc.addTrack(audioTrack, APP.stream);
+
+  // Send ICE candidates to admin as they are gathered
+  pc.onicecandidate = ({ candidate }) => {
+    if (candidate && socket) {
+      socket.emit('webrtc:ice-candidate', {
+        target: 'admin',
+        sid: APP.student?.sid,
+        candidate,
+      });
+    }
+  };
+
+  pc.onconnectionstatechange = () => {
+    console.log(`[WebRTC-Student] Connection state → ${pc.connectionState}`);
+    if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
+      delete APP._peerConns[adminSocketId];
+    }
+  };
+
+  // Create offer and send to admin via server
+  const offer = await pc.createOffer({ offerToReceiveVideo: false, offerToReceiveAudio: false });
+  await pc.setLocalDescription(offer);
+
+  socket.emit('webrtc:offer', {
+    adminSocketId,
+    sid: APP.student?.sid,
+    sdp: pc.localDescription,
+  });
+
+  console.log(`[WebRTC-Student] Offer sent to admin ${adminSocketId}`);
+}
+
+function stopStudentWebRTC() {
+  if (!APP._peerConns) return;
+  Object.values(APP._peerConns).forEach(pc => { try { pc.close(); } catch(e) {} });
+  APP._peerConns = {};
+  if (socket && APP.student?.sid) {
+    socket.emit('webrtc:stop', { sid: APP.student.sid });
+  }
+  console.log('[WebRTC-Student] Stopped all peer connections');
+}
+
+// ════════════════════════════════════════════════════════════════════
+//  WEBRTC — ADMIN SIDE
+//  Admin creates one RTCPeerConnection per student.
+//  When a remote track arrives, it is piped into the student card's
+//  <video> element replacing the simulated canvas.
+// ════════════════════════════════════════════════════════════════════
+
+APP._adminPeerConns = {};   // sid → RTCPeerConnection
+
+// Called when admin opens monitor tab — request streams from all live students
+function requestAllStudentStreams() {
+  if (!socket) return;
+  Object.values(APP.students).forEach(st => {
+    if (st.status === 'active' || st.status === 'suspicious' || st.status === 'flagged') {
+      socket.emit('webrtc:request-offer', { sid: st.id });
+    }
+  });
+}
+
+async function handleAdminReceiveOffer(sid, sdp) {
+  closeAdminPeerConn(sid);   // clean up any existing
+
+  const pc = new RTCPeerConnection({
+    iceServers: [
+      { urls: 'stun:stun.l.google.com:19302' },
+      { urls: 'stun:stun1.l.google.com:19302' },
+    ]
+  });
+  APP._adminPeerConns[sid] = pc;
+
+  // When the student's media track arrives, display it in the card
+  pc.ontrack = ({ streams }) => {
+    if (!streams || !streams[0]) return;
+    const remoteStream = streams[0];
+    console.log(`[WebRTC-Admin] Got stream from student ${sid}`);
+    mountStudentStream(sid, remoteStream);
+  };
+
+  // Send ICE candidates to the student
+  pc.onicecandidate = ({ candidate }) => {
+    if (candidate && socket) {
+      socket.emit('webrtc:ice-candidate', {
+        target: 'student',
+        sid,
+        candidate,
+      });
+    }
+  };
+
+  pc.onconnectionstatechange = () => {
+    console.log(`[WebRTC-Admin:${sid}] Connection state → ${pc.connectionState}`);
+    if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
+      closeAdminPeerConn(sid);
+    }
+  };
+
+  // Set remote description (student's offer) and create answer
+  await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+  const answer = await pc.createAnswer();
+  await pc.setLocalDescription(answer);
+
+  socket.emit('webrtc:answer', { sid, sdp: pc.localDescription });
+  console.log(`[WebRTC-Admin] Answer sent to student ${sid}`);
+}
+
+function closeAdminPeerConn(sid) {
+  if (APP._adminPeerConns[sid]) {
+    try { APP._adminPeerConns[sid].close(); } catch(e) {}
+    delete APP._adminPeerConns[sid];
+  }
+}
+
+// Mount a remote MediaStream into the correct student card video element
+function mountStudentStream(sid, remoteStream) {
+  const idx = APP.students.findIndex(s => s.id === sid);
+  if (idx < 0) return;
+  const st = APP.students[idx];
+
+  // Try both monitor ('m') and dashboard ('d') prefixes
+  ['m', 'd'].forEach(pfx => {
+    const vidEl = document.getElementById(`sv-${pfx}-${idx}`);
+    const canEl = document.getElementById(`sc-${pfx}-${idx}`);
+    if (!vidEl) return;
+
+    vidEl.srcObject = remoteStream;
+    vidEl.style.display = 'block';
+    vidEl.muted = true;
+    vidEl.autoplay = true;
+    vidEl.playsInline = true;
+    vidEl.play().catch(() => {});
+
+    // Start face detection on the real remote video
+    vidEl.onloadedmetadata = () => {
+      console.log(`[WebRTC-Admin] Displaying live stream for ${st.name}`);
+      // Stop any existing sim loop for this card by removing the canvas content
+      if (canEl) {
+        const ctx = canEl.getContext('2d');
+        if (ctx) ctx.clearRect(0, 0, canEl.width, canEl.height);
+      }
+      // Start face detection overlay on the real stream
+      startCardFaceLoop(vidEl, canEl, st, idx, false);
+
+      // Notify feed
+      if (typeof pushFeed === 'function') {
+        pushFeed(`📹 Live camera connected: ${st.name}`, 'safe');
+      }
+    };
+  });
+}
+
+// ════════════════════════════════════════════════════════════════════
+//  WEBRTC — server:webrtc:ready handler
+//  When a student signals they're ready, all admins request their offer
+// ════════════════════════════════════════════════════════════════════
+// This is handled in connectSocket() via socket events above.
+// We also add a server-side relay: server.js emits to all admins
+// when student fires webrtc:ready, admins then call request-offer.
 
 // Kick off face-api loading
 loadFaceAPI();

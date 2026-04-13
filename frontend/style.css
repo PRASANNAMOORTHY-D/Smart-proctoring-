@@ -738,3 +738,116 @@ button{cursor:pointer}
   background:rgba(4,9,15,.96);border:1px solid var(--amber);border-radius:9px;
   padding:12px 20px;z-index:400;animation:slideD .3s ease;max-width:400px;
   text-align:center;font-size:12px;box-shadow:0 8px 30px rgba(0,0,0,.5)}
+
+/* ════════════════════════════════════════
+   STUDENT CARD — AI PROCTOR PANEL
+   Shows face %, gaze, object, audio live
+   inside each admin monitor card
+════════════════════════════════════════ */
+.sc-ai-panel{
+  background:rgba(2,6,9,.97);
+  border-top:1px solid var(--bdr);
+  display:flex;flex-direction:column;
+  flex:1;overflow:hidden;
+}
+.sc-mod{
+  display:flex;align-items:center;gap:6px;
+  padding:4px 7px;border-bottom:1px solid rgba(17,34,54,.5);
+  animation:slideL .2s ease;
+}
+.sc-mod-alert{
+  background:rgba(255,36,68,.05);
+  border-bottom-color:rgba(255,36,68,.2);
+}
+.sc-mod-ico{font-size:11px;flex-shrink:0;width:14px;text-align:center}
+.sc-mod-body{flex:1;min-width:0}
+.sc-mod-lbl{
+  font-family:'JetBrains Mono',monospace;font-size:7px;
+  color:var(--t3);letter-spacing:.8px;text-transform:uppercase;
+}
+.sc-mod-val{
+  font-size:9px;color:var(--t1);margin-top:1px;
+  font-family:'JetBrains Mono',monospace;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+.sc-mod-bar{
+  height:2px;background:var(--bg5);border-radius:1px;
+  margin-top:3px;overflow:hidden;
+}
+.sc-mod-bar-fill{
+  height:100%;border-radius:1px;
+  transition:width .5s ease,background .3s;
+}
+.sc-badge{
+  display:inline-flex;align-items:center;
+  padding:1px 5px;border-radius:2px;
+  font-size:7px;font-weight:700;
+  font-family:'JetBrains Mono',monospace;
+  letter-spacing:.3px;white-space:nowrap;flex-shrink:0;
+}
+/* ════════════════════════════════════════════════════
+   MONITOR GRID — CAMERA ALWAYS AT TOP
+   Structure per card: camera → name-bar → ai-panel
+════════════════════════════════════════════════════ */
+#monitor-grid{
+  display:grid;
+  grid-template-columns:repeat(auto-fill,minmax(270px,1fr));
+  gap:12px;
+  align-items:start;
+}
+
+/* Card: strict top-to-bottom column, no stretching */
+#monitor-grid .stu-card{
+  display:flex !important;
+  flex-direction:column !important;
+  overflow:hidden;
+  border-radius:10px;
+}
+
+/* ── CAMERA CELL: FIRST child, fixed height, NEVER moves ── */
+#monitor-grid .stu-cam-cell{
+  order:1 !important;          /* always first visually */
+  flex-shrink:0 !important;
+  flex-grow:0 !important;
+  width:100% !important;
+  height:200px !important;     /* fixed pixel height — no aspect-ratio surprises */
+  min-height:200px !important;
+  max-height:200px !important;
+  position:relative !important;
+  background:#000 !important;
+  overflow:hidden !important;
+}
+
+/* ── NAME BAR: second child ── */
+#monitor-grid .stu-name-bar{
+  order:2 !important;
+  flex-shrink:0;
+  padding:5px 9px;
+  background:rgba(4,9,15,.98);
+  border-top:1px solid var(--bdr);
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+}
+
+/* ── AI PANEL: third child, below camera ── */
+#monitor-grid .sc-ai-panel{
+  order:3 !important;
+  flex-shrink:0;
+  display:flex !important;
+  flex-direction:column;
+  background:rgba(2,6,9,.97);
+  border-top:1px solid rgba(17,34,54,.5);
+}
+
+/* ── Dashboard quick-view cards stay compact ── */
+#dash-grid .stu-card{
+  display:block !important;
+  min-height:unset;
+}
+#dash-grid .sc-ai-panel{
+  display:none !important;
+}
+#dash-grid .stu-name-bar{
+  display:none !important;
+}

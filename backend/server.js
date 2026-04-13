@@ -335,6 +335,12 @@ io.on('connection', socket => {
       session.status = 'flagged';
 
     broadcastAdmin('admin:student-update', session);
+    // Also broadcast a targeted violation event so admin card AI panels update instantly
+    broadcastAdmin('admin:violation', {
+      sid,
+      violation,
+      intScore: session.intScore,
+    });
     broadcastAdmin('admin:feed', {
       msg: `⚠ ${violation.icon||'⚠'} ${session.name}: ${violation.text}`,
       type: violation.sev === 'crit' ? 'danger' : 'warn',
@@ -349,6 +355,79 @@ io.on('connection', socket => {
     session.intScore  = intScore;
     session.riskScore = 100 - intScore;
     broadcastAdmin('admin:student-update', { id: sid, intScore, riskScore: 100 - intScore });
+  });
+
+  // ── Student AI state — face conf, gaze, objects, audio (pushed every ~2s) ──
+  // Broadcasts to all admins so card AI panels update in real-time
+  socket.on('student:ai-state', ({ sid, aiState }) => {
+    const session = DB.liveSessions[sid];
+    if (!session) return;
+    session.aiState = aiState;
+    broadcastAdmin('admin:ai-state', { id: sid, aiState });
+  });
+
+  // ══════════════════════════════════════════════════════
+  //  WEBRTC SIGNALING — routes SDP/ICE between student
+  //  and admin without the server touching media at all.
+  //  Flow: admin requests offer → student sends offer →
+  //        admin sends answer → ICE candidates exchanged
+  // ══════════════════════════════════════════════════════
+
+  // Admin wants to view a student's camera — asks student to create an offer
+  socket.on('webrtc:request-offer', ({ sid }) => {
+    const session = DB.liveSessions[sid];
+    if (!session || !session.socketId) return;
+    // Forward the request to the specific student
+    io.to(session.socketId).emit('webrtc:request-offer', {
+      adminSocketId: socket.id,
+    });
+    console.log(`[WebRTC] Admin ${socket.id} requested offer from student ${sid}`);
+  });
+
+  // Student sends SDP offer → forward to the requesting admin
+  socket.on('webrtc:offer', ({ adminSocketId, sid, sdp }) => {
+    io.to(adminSocketId).emit('webrtc:offer', { sid, sdp });
+    console.log(`[WebRTC] Offer from student ${sid} → admin ${adminSocketId}`);
+  });
+
+  // Admin sends SDP answer → forward to the student
+  socket.on('webrtc:answer', ({ sid, sdp }) => {
+    const session = DB.liveSessions[sid];
+    if (!session || !session.socketId) return;
+    io.to(session.socketId).emit('webrtc:answer', {
+      adminSocketId: socket.id,
+      sdp,
+    });
+    console.log(`[WebRTC] Answer from admin → student ${sid}`);
+  });
+
+  // ICE candidates — relay in both directions
+  socket.on('webrtc:ice-candidate', ({ target, sid, candidate }) => {
+    if (target === 'admin') {
+      // Student → Admin
+      broadcastAdmin('webrtc:ice-candidate', { sid, candidate });
+    } else {
+      // Admin → Student
+      const session = DB.liveSessions[sid];
+      if (session && session.socketId) {
+        io.to(session.socketId).emit('webrtc:ice-candidate', {
+          adminSocketId: socket.id, candidate,
+        });
+      }
+    }
+  });
+
+  // Student disconnected from WebRTC (exam ended / tab closed)
+  socket.on('webrtc:stop', ({ sid }) => {
+    broadcastAdmin('webrtc:stop', { sid });
+    console.log(`[WebRTC] Student ${sid} stopped stream`);
+  });
+
+  // Student signals they are ready to stream camera to admins
+  // Server relays this to all admins so they can request an offer
+  socket.on('webrtc:ready', ({ sid }) => {
+    console.log(`[WebRTC] Student ${sid} is ready to stream`);
+    broadcastAdmin('webrtc:student-ready', { sid });
   });
 
   // ── Admin actions ──
