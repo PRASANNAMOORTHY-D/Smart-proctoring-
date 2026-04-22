@@ -22,11 +22,11 @@ const mysql        = require('mysql2/promise');
 //  MYSQL CONNECTION CONFIG — update these values
 // ═══════════════════════════════════════════════════════
 const DB_CONFIG = {
-  host:     'localhost',
-  port:     3306,
-  user:     'root',          // your MySQL username
-  password: 'MySql@8248892351', // your MySQL password
-  database: 'proctorai_db',
+  host:     'mysql-2fcc6bbd-project-415e.g.aivencloud.com',
+  port:     22148,
+  user:     'avnadmin',          // your MySQL username
+  password: 'AVNS_P-cwulUE2YJzgt6dN-5', // your MySQL password
+  database: 'defaultdb',
   waitForConnections: true,
   connectionLimit: 10,
   queueLimit: 0,
